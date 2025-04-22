@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-import os
-import json
 import asyncio
+import json
 import logging
-from typing import Any, Callable, Dict, List, Literal
+import os
 from datetime import datetime, timedelta
+from typing import Any, Callable, Dict, List, Literal, Tuple
 
 import redis.asyncio as aioredis
 from dotenv import load_dotenv
+from gspread.utils import rowcol_to_a1
 from tqdm import tqdm
 
 from .gs_utils import open_worksheet, timeit
@@ -19,26 +20,27 @@ logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(m
 load_dotenv(".env")
 log = logging.getLogger(__name__)
 
-
 # ────────────────────────── service class ──────────────────────────
 class SheetNumeric:
     def __init__(self) -> None:
-        self.ws, self.rows = open_worksheet()
+        self.ws, self.rows, self.notes = open_worksheet()
         log.info("Loaded %d rows from Google Sheets", len(self.rows))
         self.meta = SheetMeta(self.rows).build_meta()
         log.info("Building float matrix for %d rows", len(self.rows))
         self.matrix: List[List[float]] = []
         for row_idx, row in enumerate(tqdm(self.rows, desc="Converting to float matrix")):
-            row_values = [self._to_float(c, row_idx + 1, col_idx + 1) for col_idx, c in enumerate(row)]
+            row_values = [SheetNumeric._to_float(c, row_idx + 1, col_idx + 1) for col_idx, c in enumerate(row)]
             self.matrix.append(row_values)
         self.redis = aioredis.from_url(
             os.getenv("REDIS_URL", "redis://localhost:6379/0"),
             encoding="utf-8",
             decode_responses=True,
         )
+        self.notes: Dict[str, str] = self.notes  # Примечания из Google Sheets
 
     # ─── helpers ───────────────────────────────────────────────────
-    def _to_float(self, raw: str, row: int, col: int) -> float:
+    @staticmethod
+    def _to_float(raw: str, row: int, col: int) -> float:
         if not raw or raw.strip() == '-':
             return 0.0
         cleaned = (
@@ -71,7 +73,7 @@ class SheetNumeric:
         return self.matrix[row][col] if col < len(self.matrix[row]) else 0.0
 
     async def _cached(self, key: str, ttl: int, producer: Callable[[], Any]) -> Any:
-        if (val := await self.redis.get(key)):
+        if val := await self.redis.get(key):
             return json.loads(val)
         data = producer()
         if asyncio.iscoroutine(data):
@@ -79,22 +81,18 @@ class SheetNumeric:
         await self.redis.set(key, json.dumps(data, ensure_ascii=False), ex=ttl)
         return data
 
-    def _map_month_key(self, ym: str) -> str:
-        """Convert YYYY-MM to Russian month key used in month_subtotals."""
-        month_map = {
-            '11': 'нояб', '12': 'дек',
-            '01': 'янв', '02': 'февр', '03': 'мар', '04': 'апр', '05': 'май'
-        }
-        try:
-            year, month = ym.split('-')
-            russian_month = month_map.get(month, month)
-            return f"{year}-{russian_month}"
-        except ValueError:
-            return ym  # Return unchanged if format is invalid
+    async def _get_comment(self, row: int, col: int) -> str:
+        cell_address = rowcol_to_a1(row, col)
+        key = f"comment:{cell_address}"
+        comment = await self.redis.get(key)
+        if comment is None:
+            comment = self.notes.get(cell_address, "")
+            await self.redis.set(key, comment, ex=3600)  # Кэшируем на 1 час
+        return comment
 
     # ─── tree-roll для расходов ────────────────────────────────────
-    def _roll(self, col: int, level: Literal["section", "category", "subcategory"], zero_suppress: bool = False) -> \
-            Dict[str, Dict[str, Any]]:
+    async def _roll(self, col: int, level: Literal["section", "category", "subcategory"], zero_suppress: bool = False,
+                    include_comments: bool = False) -> Dict[str, Dict[str, Any]]:
         out: Dict[str, Dict[str, Any]] = {}
         for sec_code, sec in self.meta["expenses"].items():
             sec_sum = 0.0
@@ -104,12 +102,12 @@ class SheetNumeric:
                 cat_node = {"name": cat["name"], "amount": 0.0, "subs": {}}
                 for sub_code, sub in cat["subs"].items():
                     val = self._cell(sub["row"], col)
+                    comment = await self._get_comment(sub["row"], col) if include_comments else ""
                     if zero_suppress and val == 0.0:
                         continue
-                    log.debug(f"Subcategory {sub_code} (row {sub['row']}, col {col}): value = {val}")
                     cat_sum += val
                     if level == "subcategory":
-                        cat_node["subs"][sub_code] = {"name": sub["name"], "amount": val}
+                        cat_node["subs"][sub_code] = {"name": sub["name"], "amount": val, "comment": comment}
                 if zero_suppress and cat_sum == 0.0:
                     continue
                 cat_node["amount"] = cat_sum
@@ -125,15 +123,31 @@ class SheetNumeric:
         return out
 
     # ─── roll для кредиторов ───────────────────────────────────────
-    def _roll_creditors(self, col: int, zero_suppress: bool = False) -> Dict[str, Dict[str, Any]]:
+    async def _roll_creditors(self, col: int, zero_suppress: bool = False, include_comments: bool = False) -> Dict[
+        str, Dict[str, Any]]:
         out: Dict[str, Dict[str, Any]] = {}
         for cred_code, cred in self.meta["creditors"].items():
             balance = self._cell(cred["base"] + 4, col)
+            comment = await self._get_comment(cred["base"] + 4, col) if include_comments else ""
             if zero_suppress and balance == 0.0:
                 continue
-            log.debug(f"Creditor {cred_code} (row {cred['base'] + 4}, col {col}): balance = {balance}")
-            out[cred_code] = {"name": cred_code, "balance": balance}
+            out[cred_code] = {"name": cred_code, "balance": balance, "comment": comment}
         return out
+
+    async def _process_income_items(self, col: int, include_comments: bool) -> Tuple[float, List[Dict[str, Any]]]:
+        inc_total = 0.0
+        inc_items = []
+        for cat_code, cat in self.meta["income"]["cats"].items():
+            v_cat = self._cell(cat["row"], col)
+            comment = await self._get_comment(cat["row"], col) if include_comments else ""
+            inc_items.append({"code": cat_code, "name": cat["name"], "amount": v_cat, "comment": comment})
+            inc_total += v_cat
+            for sub_code, sub in cat["subs"].items():
+                v_sub = self._cell(sub["row"], col)
+                comment = await self._get_comment(sub["row"], col) if include_comments else ""
+                inc_items.append({"code": sub_code, "name": sub["name"], "amount": v_sub, "comment": comment})
+                inc_total += v_sub
+        return inc_total, inc_items
 
     # ─── public API ────────────────────────────────────────────────
     async def day_breakdown(
@@ -141,7 +155,8 @@ class SheetNumeric:
             date: str,
             level: Literal["section", "category", "subcategory"] = "subcategory",
             zero_suppress: bool = False,
-            include_month_summary: bool = False
+            include_month_summary: bool = False,
+            include_comments: bool = True
     ) -> Dict[str, Any]:
         async def prod() -> Dict[str, Any]:
             col = self.meta["date_cols"].get(date)
@@ -153,30 +168,32 @@ class SheetNumeric:
             inc_items = []
             for cat_code, cat in self.meta["income"]["cats"].items():
                 v_cat = self._cell(cat["row"], col)
+                comment = await self._get_comment(cat["row"], col) if include_comments else ""
                 if not zero_suppress or v_cat != 0.0:
                     if level != "section":
-                        inc_items.append({"code": cat_code, "name": cat["name"], "amount": v_cat})
+                        inc_items.append({"code": cat_code, "name": cat["name"], "amount": v_cat, "comment": comment})
                 inc_total += v_cat
                 for sub_code, sub in cat["subs"].items():
                     v_sub = self._cell(sub["row"], col)
+                    comment = await self._get_comment(sub["row"], col) if include_comments else ""
                     if not zero_suppress or v_sub != 0.0:
-                        inc_items.append({"code": sub_code, "name": sub["name"], "amount": v_sub})
+                        inc_items.append({"code": sub_code, "name": sub["name"], "amount": v_sub, "comment": comment})
                     inc_total += v_sub
 
             # ─ expense ─
-            exp_tree = self._roll(col, level, zero_suppress)
+            exp_tree = await self._roll(col, level, zero_suppress, include_comments)  # Await the coroutine
             exp_total = sum(s["amount"] for s in exp_tree.values())
 
             # ─ creditors ─
-            cred_tree = self._roll_creditors(col, zero_suppress)
+            cred_tree = await self._roll_creditors(col, zero_suppress, include_comments)  # Await the coroutine
             cred_total = sum(c["balance"] for c in cred_tree.values())
 
             # ─ monthly progress ─
             ym = f"{date[6:10]}-{date[3:5]}"
-            ym_russian = self._map_month_key(ym)
-            ms = self.meta["month_subtotals"].get(ym_russian, {})
-            month_inc = self._cell(5, ms["income"]) if "income" in ms else None
-            month_exp = self._cell(17, ms["expense"]) if "expense" in ms else None
+            ms = self.meta["month_cols"].get(ym, {})
+            month_col = ms.get("balance", 0)
+            month_inc = self._cell(5, month_col) if month_col else None
+            month_exp = self._cell(17, month_col) if month_col else None
 
             result = {
                 "date": date,
@@ -198,39 +215,77 @@ class SheetNumeric:
             }
 
             if include_month_summary:
-                if ym_russian in self.meta["month_subtotals"]:
-                    ms_ym = self.meta["month_subtotals"][ym_russian]
-                    balance = self._cell(2, ms_ym["balance"]) if "balance" in ms_ym else None
-                    free_cash = self._cell(3, ms_ym["balance"]) if "balance" in ms_ym else None
+                if ym in self.meta["month_cols"]:
+                    ms_ym = self.meta["month_cols"][ym]
+                    balance = self._cell(2, ms_ym["balance"])
+                    free_cash = self._cell(3, ms_ym["balance"])
                     result["month_summary"] = {
                         "balance": balance,
                         "free_cash": free_cash,
-                        "income_progress": self._cell(5, ms_ym["income"]) if "income" in ms_ym else None,
-                        "expense_progress": self._cell(17, ms_ym["expense"]) if "expense" in ms_ym else None
+                        "income_progress": self._cell(5, ms_ym["balance"]),
+                        "expense_progress": self._cell(17, ms_ym["balance"])
                     }
                 else:
-                    log.warning(f"Month {ym_russian} not found in month_subtotals")
+                    log.warning(f"Month {ym} not found in month_cols")
 
             return result
 
-        return await self._cached(f"daydetail:{date}:{level}:{zero_suppress}:{include_month_summary}", 300, prod)
+        return await self._cached(
+            f"daydetail:{date}:{level}:{zero_suppress}:{include_month_summary}:{include_comments}", 300, prod)
 
-    async def get_month_summary(self, ym: str) -> Dict[str, Any]:
-        ym_russian = self._map_month_key(ym)
-        ms = self.meta["month_subtotals"].get(ym_russian)
+    async def get_month_summary(self, ym: str, include_comments: bool = True) -> Dict[str, Any]:
+        ms = self.meta["month_cols"].get(ym)
         if not ms:
-            raise ValueError(f"Month {ym_russian} not found in metadata")
+            raise ValueError(f"Month {ym} not found in metadata")
 
-        balance = self._cell(2, ms["balance"]) if "balance" in ms else None
-        free_cash = self._cell(3, ms["balance"]) if "balance" in ms else None
-        income_progress = self._cell(5, ms["income"]) if "income" in ms else None
-        expense_progress = self._cell(17, ms["expense"]) if "expense" in ms else None
+        col = ms["balance"]
+        balance = self._cell(2, col)
+        free_cash = self._cell(3, col)
+        income_progress = self._cell(5, col)
+        expense_progress = self._cell(17, col)
+
+        # Получаем детализированные доходы с комментариями
+        inc_total, inc_items = await self._process_income_items(col, include_comments)
+
+        # Получаем детализированные расходы с комментариями
+        exp_tree = self._roll(col, "subcategory", zero_suppress=False, include_comments=include_comments)
+        exp_total = sum(s["amount"] for s in exp_tree.values())
+
+        # Получаем кредиторов с комментариями, исключая служебные поля
+        exclude_creditors = [
+            "ВЗЯЛИ В ДОЛГ :",
+            "ВЕРНУЛИ ДОЛГ :",
+            "СЭКОНОМИЛИ :",
+            "ОСТАТОК - МЫ СКОЛЬКО ДОЛЖНЫ :"
+        ]
+        cred_tree = {}
+        for cred_code, cred in self.meta["creditors"].items():
+            if cred_code in exclude_creditors:
+                continue
+            balance = self._cell(cred["base"] + 4, col)
+            comment = await self._get_comment(cred["base"] + 4, col) if include_comments else ""
+            if balance != 0.0:
+                cred_tree[cred_code] = {"name": cred_code, "balance": balance, "comment": comment}
+        cred_total = sum(c["balance"] for c in cred_tree.values())
 
         return {
+            "month": ym,
             "balance": balance,
             "free_cash": free_cash,
-            "income_progress": income_progress,
-            "expense_progress": expense_progress
+            "income": {
+                "total": inc_total,
+                "items": inc_items,
+                "progress": income_progress
+            },
+            "expense": {
+                "total": exp_total,
+                "tree": exp_tree,
+                "progress": expense_progress
+            },
+            "creditors": {
+                "total": cred_total,
+                "items": cred_tree
+            }
         }
 
     async def period_expense_summary(
@@ -238,7 +293,8 @@ class SheetNumeric:
             start_date: str,
             end_date: str,
             level: Literal["section", "category", "subcategory"] = "subcategory",
-            zero_suppress: bool = False
+            zero_suppress: bool = False,
+            include_comments: bool = True
     ) -> Dict[str, Any]:
         async def prod() -> Dict[str, Any]:
             start = datetime.strptime(start_date, "%d.%m.%Y")
@@ -256,7 +312,7 @@ class SheetNumeric:
                 current += timedelta(days=1)
 
             breakdown = {}
-            daily_expenses = {}
+            daily_summary = {}
             totals = {
                 "income": {"total": 0.0, "items": {}},
                 "expense": {"total": 0.0, "tree": {}},
@@ -264,16 +320,21 @@ class SheetNumeric:
             }
 
             for date in dates:
-                daily_data = await self.day_breakdown(date, level, zero_suppress)
+                daily_data = await self.day_breakdown(date, level, zero_suppress, include_comments=include_comments)
+                inc_total = daily_data["income"]["total"]
                 exp_total = daily_data["expense"]["total"]
-                daily_expenses[date] = exp_total
-                if zero_suppress and exp_total == 0.0 and daily_data["income"]["total"] == 0.0 and \
-                        daily_data["creditors"]["total"] == 0.0:
+                cred_total = daily_data["creditors"]["total"]
+                daily_summary[date] = {
+                    "income": inc_total,
+                    "expense": exp_total,
+                    "creditors": cred_total
+                }
+                if zero_suppress and inc_total == 0.0 and exp_total == 0.0 and cred_total == 0.0:
                     continue
                 breakdown[date] = daily_data
 
-                # Aggregate income
-                totals["income"]["total"] += daily_data["income"]["total"]
+                # Агрегируем доходы
+                totals["income"]["total"] += inc_total
                 for item in daily_data["income"]["items"]:
                     code = item["code"]
                     if code not in totals["income"]["items"]:
@@ -283,7 +344,7 @@ class SheetNumeric:
                         }
                     totals["income"]["items"][code]["amount"] += item["amount"]
 
-                # Aggregate expenses
+                # Агрегируем расходы
                 totals["expense"]["total"] += exp_total
                 for sec_code, sec in daily_data["expense"]["tree"].items():
                     if sec_code not in totals["expense"]["tree"]:
@@ -310,8 +371,8 @@ class SheetNumeric:
                             totals["expense"]["tree"][sec_code]["cats"][cat_code]["subs"][sub_code]["amount"] += sub[
                                 "amount"]
 
-                # Aggregate creditors
-                totals["creditors"]["total"] += daily_data["creditors"]["total"]
+                # Агрегируем кредиторов
+                totals["creditors"]["total"] += cred_total
                 for cred_code, cred in daily_data["creditors"]["items"].items():
                     if cred_code not in totals["creditors"]["items"]:
                         totals["creditors"]["items"][cred_code] = {
@@ -320,7 +381,7 @@ class SheetNumeric:
                         }
                     totals["creditors"]["items"][cred_code]["balance"] += cred["balance"]
 
-            # Filter income items, keeping as dict
+            # Фильтруем доходы, если нужно
             if zero_suppress:
                 totals["income"]["items"] = {
                     k: v for k, v in totals["income"]["items"].items()
@@ -329,12 +390,13 @@ class SheetNumeric:
 
             return {
                 "period": f"{start_date} to {end_date}",
-                "daily_expenses": daily_expenses,
+                "daily_summary": daily_summary,
                 "breakdown": breakdown,
                 "totals": totals
             }
 
-        return await self._cached(f"periodsummary:{start_date}:{end_date}:{level}:{zero_suppress}", 300, prod)
+        return await self._cached(f"periodsummary:{start_date}:{end_date}:{level}:{zero_suppress}:{include_comments}",
+                                  300, prod)
 
     async def _month_sync(self, ym: str) -> Dict[str, float]:
         col = self.meta["month_cols"][ym]["balance"]
@@ -394,7 +456,6 @@ class SheetNumeric:
             log.info("Caching month totals for %s", ym)
             await self.month_totals(ym)
 
-
 # ────────────────────────── CLI demo ─────────────────────────────
 @timeit("CLI demo")
 async def _demo():
@@ -411,7 +472,6 @@ async def _demo():
     print("\n▶ month", ym, await sn.month_totals(ym))
     print("\n▶ months overview")
     pprint.pp(await sn.months_overview(), width=120)
-
 
 if __name__ == "__main__":
     asyncio.run(_demo())
