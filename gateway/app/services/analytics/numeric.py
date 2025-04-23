@@ -1,82 +1,107 @@
-# gateway/app/services/sheets_numeric.py
-from __future__ import annotations
-
+# gateway/app/services/analytics/numeric.py
 import asyncio
 import json
-import logging
-import os
 from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Literal, Tuple
 
-import redis.asyncio as aioredis
-from dotenv import load_dotenv
 from tqdm import tqdm
 
-from .gs_utils import open_worksheet, timeit, to_a1
-from .sheets_meta import SheetMeta
+from .meta import SheetMeta
+from ..core.config import log
+from ..core.connections import open_worksheet_sync, get_redis
+from ..core.utils import to_a1, to_float, timeit
 
-# Настройка логирования
-logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(message)s")
-load_dotenv(".env")
-log = logging.getLogger(__name__)
 
 class SheetNumeric:
-    def __init__(self) -> None:
-        self.ws, self.rows, self.notes = open_worksheet()
-        log.info("Loaded %d rows from Google Sheets", len(self.rows))
-        self.meta = SheetMeta(self.rows).build_meta()
-        log.info("Building float matrix for %d rows", len(self.rows))
-        self.matrix: List[List[float]] = []
-        for row_idx, row in enumerate(tqdm(self.rows, desc="Converting to float matrix")):
-            row_values = [SheetNumeric._to_float(c) for c in row]
-            self.matrix.append(row_values)
-        self.redis = aioredis.from_url(
-            os.getenv("REDIS_URL", "redis://localhost:6379/0"),
-            encoding="utf-8",
-            decode_responses=True,
-        )
-        self.notes: Dict[str, str] = self.notes
+    def __init__(self):
+        log.info("Initializing SheetNumeric")
+        self.redis = None
+        self.rows = []
+        self.notes = {}
+        self.meta = None
+        self.matrix = []
 
-    # ─── helpers ───────────────────────────────────────────────────
-    @staticmethod
-    def _to_float(raw: str) -> float:
-        if not raw or raw.strip() == '-':
-            return 0.0
-        cleaned = (
-            raw.replace("\xa0", "")
-            .replace(" ", "")
-            .replace(",", ".")
-            .replace("₽", "")
-            .strip()
-        )
-        if cleaned == '-' or cleaned in (
-                'Экстренныйрезерв',
-                '1.Взяли/2.ПолучилиДОЛГ:',
-                '1.Вернули/2.ДалиДОЛГ:',
-                'СЭКОНОМИЛИ:',
-                'ОСТАТОК-МЫСКОЛЬКОДОЛЖНЫ:'
-        ) or cleaned.startswith('Итого'):
-            return 0.0
+    async def _load_cached_raw_data(self) -> tuple[List[List[str]], Dict[str, str]] | None:
+        if self.redis is None:
+            self.redis = await get_redis()
+        cached_data = await self.redis.get("sheet:raw_data")
+        if cached_data:
+            try:
+                log.debug("Attempting to load raw data from cache")
+                data = json.loads(cached_data)
+                log.info("Loaded raw data from cache")
+                return data["rows"], data["notes"]
+            except json.JSONDecodeError as e:
+                log.error(f"Failed to decode cached raw data: {e}")
+                return None
+        log.debug("No cached raw data found")
+        return None
+
+    async def _save_raw_data_to_cache(self, rows: List[List[str]], notes: Dict[str, str]) -> None:
+        if self.redis is None:
+            self.redis = await get_redis()
         try:
-            return float(cleaned)
-        except ValueError:
-            return 0.0
+            log.debug(f"Saving raw data to cache: rows={len(rows)}, notes={len(notes)}")
+            await self.redis.set(
+                "sheet:raw_data",
+                json.dumps({"rows": rows, "notes": notes}, ensure_ascii=False),
+                ex=3600
+            )
+            log.info("Saved raw data to cache with key 'sheet:raw_data'")
+        except Exception as e:
+            log.error(f"Failed to save raw data to cache: {e}")
 
-    def _cell(self, row: int, col: int) -> float:
-        row -= 1
-        col -= 1
-        return self.matrix[row][col] if col < len(self.matrix[row]) else 0.0
+    async def _load_cached_matrix(self) -> List[List[float]] | None:
+        if self.redis is None:
+            self.redis = await get_redis()
+        cached_matrix = await self.redis.get("sheet:matrix")
+        if cached_matrix:
+            try:
+                log.debug("Attempting to load matrix from cache")
+                matrix = json.loads(cached_matrix)
+                log.info("Loaded matrix from cache")
+                return matrix
+            except json.JSONDecodeError as e:
+                log.error(f"Failed to decode cached matrix: {e}")
+                return None
+        log.debug("No cached matrix found")
+        return None
+
+    async def _save_matrix_to_cache(self, matrix: List[List[float]]) -> None:
+        if self.redis is None:
+            self.redis = await get_redis()
+        try:
+            log.debug(f"Saving matrix to cache: rows={len(matrix)}")
+            await self.redis.set(
+                "sheet:matrix",
+                json.dumps(matrix, ensure_ascii=False),
+                ex=3600
+            )
+            log.info("Saved matrix to cache with key 'sheet:matrix'")
+        except Exception as e:
+            log.error(f"Failed to save matrix to cache: {e}")
 
     async def _cached(self, key: str, ttl: int, producer: Callable[[], Any]) -> Any:
-        if val := await self.redis.get(key):
+        if self.redis is None:
+            self.redis = await get_redis()
+        val = await self.redis.get(key)
+        if val is not None:
+            log.debug(f"Cache hit for key {key}")
             return json.loads(val)
+        log.debug(f"Cache miss for key {key}, executing producer")
         data = producer()
         if asyncio.iscoroutine(data):
             data = await data
-        await self.redis.set(key, json.dumps(data, ensure_ascii=False), ex=ttl)
+        try:
+            await self.redis.set(key, json.dumps(data, ensure_ascii=False), ex=ttl)
+            log.debug(f"Cache set for key {key} with TTL {ttl}")
+        except Exception as e:
+            log.error(f"Failed to cache data for key {key}: {e}")
         return data
 
     async def _get_comment(self, row: int, col: int) -> str:
+        if self.redis is None:
+            self.redis = await get_redis()
         cell_key = to_a1(row, col)
         key = f"comment:{cell_key}"
         comment = await self.redis.get(key)
@@ -86,11 +111,55 @@ class SheetNumeric:
             await self.redis.set(key, comment, ex=3600)
         return comment
 
-    # ─── tree-roll для расходов ────────────────────────────────────
+    async def initialize(self) -> None:
+        log.debug("Starting SheetNumeric initialize")
+        cached_raw = await self._load_cached_raw_data()
+        if cached_raw:
+            self.rows, self.notes = cached_raw
+            log.debug("Using cached raw data")
+        else:
+            log.debug("Loading data from Google Sheets")
+            try:
+                result = open_worksheet_sync()
+                if not isinstance(result, tuple) or len(result) != 3:
+                    raise ValueError(f"Expected tuple of length 3, got {type(result)}")
+                self.ws, self.rows, self.notes = result
+                log.info(f"Loaded {len(self.rows)} rows, {len(self.notes)} notes")
+                await self._save_raw_data_to_cache(self.rows, self.notes)
+            except Exception as e:
+                log.error(f"Failed to load data from Google Sheets: {e}")
+                raise ValueError(f"Failed to load data from Google Sheets: {str(e)}")
+
+        cached_matrix = await self._load_cached_matrix()
+        if cached_matrix:
+            self.matrix = cached_matrix
+        else:
+            log.debug("Building matrix from rows")
+            self.matrix = []
+            for row in tqdm(self.rows, desc="Converting to float matrix"):
+                row_values = [to_float(c) for c in row]
+                self.matrix.append(row_values)
+            await self._save_matrix_to_cache(self.matrix)
+
+        self.meta = SheetMeta()
+        self.meta.rows = self.rows
+        self.meta.notes = self.notes
+        self.meta.col_b = [r[1].strip() if len(r) > 1 else "" for r in self.rows]
+        self.meta.col_c = [r[2].strip() if len(r) > 2 else "" for r in self.rows]
+        self.meta.meta = await self.meta.build_meta()
+        log.debug("SheetNumeric initialize completed")
+
+    def _cell(self, row: int, col: int) -> float:
+        try:
+            return self.matrix[row - 1][col - 1]
+        except IndexError:
+            log.debug(f"Cell ({row}, {col}) out of bounds")
+            return 0.0
+
     async def _roll(self, col: int, level: Literal["section", "category", "subcategory"], zero_suppress: bool = False,
                     include_comments: bool = False) -> Dict[str, Dict[str, Any]]:
         out: Dict[str, Dict[str, Any]] = {}
-        for sec_code, sec in self.meta["expenses"].items():
+        for sec_code, sec in self.meta.meta["expenses"].items():
             sec_sum = 0.0
             sec_node = {"name": sec["name"], "amount": 0.0, "cats": {}}
             for cat_code, cat in sec["cats"].items():
@@ -118,11 +187,10 @@ class SheetNumeric:
             out[sec_code] = sec_node
         return out
 
-    # ─── roll для кредиторов ───────────────────────────────────────
     async def _roll_creditors(self, col: int, zero_suppress: bool = False, include_comments: bool = False) -> Dict[
         str, Dict[str, Any]]:
         out: Dict[str, Dict[str, Any]] = {}
-        for cred_code, cred in self.meta["creditors"].items():
+        for cred_code, cred in self.meta.meta["creditors"].items():
             balance = self._cell(cred["base"] + 4, col)
             comment = await self._get_comment(cred["base"] + 4, col) if include_comments else ""
             if zero_suppress and balance == 0.0:
@@ -135,7 +203,7 @@ class SheetNumeric:
         float, List[Dict[str, Any]]]:
         inc_total = 0.0
         inc_items = []
-        for cat_code, cat in self.meta["income"].get("cats", {}).items():
+        for cat_code, cat in self.meta.meta["income"].get("cats", {}).items():
             v_cat = self._cell(cat["row"], col)
             comment = await self._get_comment(cat["row"], col) if include_comments else ""
             if not zero_suppress or v_cat != 0.0:
@@ -150,7 +218,6 @@ class SheetNumeric:
                 inc_total += v_sub
         return inc_total, inc_items
 
-    # ─── public API ────────────────────────────────────────────────
     async def day_breakdown(
             self,
             date: str,
@@ -160,7 +227,9 @@ class SheetNumeric:
             include_comments: bool = True
     ) -> Dict[str, Any]:
         async def prod() -> Dict[str, Any]:
-            col = self.meta["date_cols"].get(date)
+            if not self.meta.meta["date_cols"]:
+                raise ValueError("No date columns available in metadata. Please refresh data.")
+            col = self.meta.meta["date_cols"].get(date)
             if col is None:
                 raise ValueError(f"Date {date} not in metadata")
 
@@ -171,10 +240,10 @@ class SheetNumeric:
             cred_total = sum(c["balance"] for c in cred_tree.values())
 
             ym = f"{date[6:10]}-{date[3:5]}"
-            ms = self.meta["month_cols"].get(ym, {})
+            ms = self.meta.meta["month_cols"].get(ym, {})
             month_col = ms.get("balance", 0)
-            month_inc = self._cell(self.meta["income"].get("total_row", 0), month_col) if month_col else None
-            month_exp = self._cell(self.meta["expenses"].get("total_row", 0), month_col) if month_col else None
+            month_inc = self._cell(self.meta.meta["income"].get("total_row", 0), month_col) if month_col else None
+            month_exp = self._cell(self.meta.meta["expenses"].get("total_row", 0), month_col) if month_col else None
 
             result = {
                 "date": date,
@@ -196,15 +265,15 @@ class SheetNumeric:
             }
 
             if include_month_summary:
-                if ym in self.meta["month_cols"]:
-                    ms_ym = self.meta["month_cols"][ym]
+                if ym in self.meta.meta["month_cols"]:
+                    ms_ym = self.meta.meta["month_cols"][ym]
                     balance = self._cell(2, ms_ym["balance"])
                     free_cash = self._cell(3, ms_ym["balance"])
                     result["month_summary"] = {
                         "balance": balance,
                         "free_cash": free_cash,
-                        "income_progress": self._cell(self.meta["income"].get("total_row", 0), ms_ym["balance"]),
-                        "expense_progress": self._cell(self.meta["expenses"].get("total_row", 0), ms_ym["balance"])
+                        "income_progress": self._cell(self.meta.meta["income"].get("total_row", 0), ms_ym["balance"]),
+                        "expense_progress": self._cell(self.meta.meta["expenses"].get("total_row", 0), ms_ym["balance"])
                     }
                 else:
                     log.warning(f"Month {ym} not found in month_cols")
@@ -215,15 +284,17 @@ class SheetNumeric:
             f"daydetail:{date}:{level}:{zero_suppress}:{include_month_summary}:{include_comments}", 300, prod)
 
     async def get_month_summary(self, ym: str, include_comments: bool = True) -> Dict[str, Any]:
-        ms = self.meta["month_cols"].get(ym)
+        if not self.meta.meta["month_cols"]:
+            raise ValueError("No month columns available in metadata. Please refresh data.")
+        ms = self.meta.meta["month_cols"].get(ym)
         if not ms:
             raise ValueError(f"Month {ym} not found in metadata")
 
         col = ms["balance"]
         balance = self._cell(2, col)
         free_cash = self._cell(3, col)
-        income_progress = self._cell(self.meta["income"].get("total_row", 0), col)
-        expense_progress = self._cell(self.meta["expenses"].get("total_row", 0), col)
+        income_progress = self._cell(self.meta.meta["income"].get("total_row", 0), col)
+        expense_progress = self._cell(self.meta.meta["expenses"].get("total_row", 0), col)
 
         inc_total, inc_items = await self._process_income_items(col, include_comments)
         exp_tree = await self._roll(col, "subcategory", zero_suppress=False, include_comments=include_comments)
@@ -236,7 +307,7 @@ class SheetNumeric:
             "ОСТАТОК - МЫ СКОЛЬКО ДОЛЖНЫ :"
         ]
         cred_tree = {}
-        for cred_code, cred in self.meta["creditors"].items():
+        for cred_code, cred in self.meta.meta["creditors"].items():
             if cred_code in exclude_creditors:
                 continue
             balance = self._cell(cred["base"] + 4, col)
@@ -274,6 +345,8 @@ class SheetNumeric:
             include_comments: bool = True
     ) -> Dict[str, Any]:
         async def prod() -> Dict[str, Any]:
+            if not self.meta.meta["date_cols"]:
+                raise ValueError("No date columns available in metadata. Please refresh data.")
             start = datetime.strptime(start_date, "%d.%m.%Y")
             end = datetime.strptime(end_date, "%d.%m.%Y")
             log.debug(f"Parsed start_date: {start}, end_date: {end}")
@@ -284,7 +357,7 @@ class SheetNumeric:
             current = start
             while current <= end:
                 date_str = current.strftime("%d.%m.%Y")
-                if date_str in self.meta["date_cols"]:
+                if date_str in self.meta.meta["date_cols"]:
                     dates.append(date_str)
                 current += timedelta(days=1)
 
@@ -373,16 +446,18 @@ class SheetNumeric:
                                   300, prod)
 
     async def _month_sync(self, ym: str) -> Dict[str, float]:
-        col = self.meta["month_cols"][ym]["balance"]
+        if not self.meta.meta["month_cols"]:
+            raise ValueError("No month columns available in metadata. Please refresh data.")
+        col = self.meta.meta["month_cols"][ym]["balance"]
         bal = self._cell(2, col)
         free = self._cell(3, col)
         inc = sum(
             self._cell(cat["row"], col) +
             sum(self._cell(sub["row"], col) for sub in cat["subs"].values())
-            for cat in self.meta["income"].get("cats", {}).values()
+            for cat in self.meta.meta["income"].get("cats", {}).values()
         )
         exp = 0.0
-        for sec in self.meta["expenses"].values():
+        for sec in self.meta.meta["expenses"].values():
             for cat in sec["cats"].values():
                 for s in cat["subs"].values():
                     exp += self._cell(s["row"], col)
@@ -394,15 +469,17 @@ class SheetNumeric:
             include_balances: bool = False,
     ) -> Dict[str, float]:
         async def prod():
-            ms = self.meta["month_cols"].get(ym)
+            if not self.meta.meta["month_cols"]:
+                raise ValueError("No month columns available in metadata. Please refresh data.")
+            ms = self.meta.meta["month_cols"].get(ym)
             if not ms:
                 m = await self._month_sync(ym)
                 inc, exp = m["income"], m["expense"]
                 bal, free = m["balance"], m["free_cash"]
             else:
                 col = ms["balance"]
-                inc = self._cell(self.meta["income"].get("total_row", 0), col)
-                exp = self._cell(self.meta["expenses"].get("total_row", 0), col)
+                inc = self._cell(self.meta.meta["income"].get("total_row", 0), col)
+                exp = self._cell(self.meta.meta["expenses"].get("total_row", 0), col)
                 bal = self._cell(2, col) if include_balances else None
                 free = self._cell(3, col) if include_balances else None
             d = {"income": inc, "expense": exp}
@@ -414,8 +491,10 @@ class SheetNumeric:
 
     async def months_overview(self) -> Dict[str, Dict[str, float]]:
         async def prod():
+            if not self.meta.meta["month_cols"]:
+                raise ValueError("No month columns available in metadata. Please refresh data.")
             out = {}
-            for ym in tqdm(self.meta["month_cols"], desc="Processing months overview"):
+            for ym in tqdm(self.meta.meta["month_cols"], desc="Processing months overview"):
                 out[ym] = await self.month_totals(ym)
             return out
 
@@ -423,18 +502,21 @@ class SheetNumeric:
 
     async def warm_cache(self):
         log.info("Warming up cache")
-        if self.meta["date_cols"]:
-            first = next(iter(self.meta["date_cols"]))
+        if self.meta.meta["date_cols"]:
+            first = next(iter(self.meta.meta["date_cols"]))
             log.info("Caching day breakdown for %s", first)
             await self.day_breakdown(first, "category")
-        for ym in tqdm(list(self.meta["month_cols"])[:2], desc="Caching months"):
+        else:
+            log.warning("No date columns available for cache warming")
+        for ym in tqdm(list(self.meta.meta["month_cols"])[:2], desc="Caching months"):
             log.info("Caching month totals for %s", ym)
             await self.month_totals(ym)
 
-# ────────────────────────── CLI demo ─────────────────────────────
+
 @timeit("CLI demo")
 async def _demo():
     sn = SheetNumeric()
+    await sn.initialize()
     await sn.warm_cache()
     date = "25.11.2024"
     print("▶ breakdown", date)
@@ -443,10 +525,11 @@ async def _demo():
         pprint.pp(await sn.day_breakdown(date, "subcategory"), width=100)
     except ValueError as e:
         print(f"Error: {e}")
-    ym = next(iter(sn.meta["month_cols"]))
+    ym = next(iter(sn.meta.meta["month_cols"])) if sn.meta.meta["month_cols"] else "N/A"
     print("\n▶ month", ym, await sn.month_totals(ym))
     print("\n▶ months overview")
     pprint.pp(await sn.months_overview(), width=120)
+
 
 if __name__ == "__main__":
     asyncio.run(_demo())

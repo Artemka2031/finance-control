@@ -1,3 +1,4 @@
+# gateway/app/services/sheets_meta.py
 from __future__ import annotations
 
 import asyncio
@@ -39,11 +40,6 @@ class SheetMeta:
 
     # ───────────── ДАТЫ → date_cols + month_cols + month_subtotals ──────────
     def _scan_date_columns(self, meta: MetaDoc) -> None:
-        """
-        Заполняет:
-            meta["date_cols"]  = {'01.11.2024': 8, ...}
-            meta["month_cols"] = {'2024-11': {'balance': 38, 'free': 38}, ...}
-        """
         meta.setdefault("date_cols", {})
         meta.setdefault("month_cols", {})
 
@@ -60,7 +56,6 @@ class SheetMeta:
                     if len(parts) == 3:
                         _, mm, yyyy = parts
                         ym = f"{yyyy}-{mm.zfill(2)}"
-                        # Проверяем, не является ли это первым днем месяца
                         if meta["month_cols"].get(ym) is None:
                             meta["month_cols"][ym] = {"balance": col, "free": col}
                 elif "Промежуточные" in cell:
@@ -75,7 +70,6 @@ class SheetMeta:
         push_dates(self._index_in_col_b("Р0"))
 
     def _month_to_num(self, month_abbr: str) -> str:
-        """Преобразует сокращение месяца в номер."""
         month_map = {
             'янв': '01', 'февр': '02', 'мар': '03', 'апр': '04', 'май': '05',
             'июн': '06', 'июл': '07', 'авг': '08', 'сент': '09', 'окт': '10',
@@ -91,6 +85,7 @@ class SheetMeta:
         log.info("Scanning income tree starting from row %d", root + 1)
         for i in tqdm(range(root + 1, len(self.col_b)), desc="Scanning income"):
             if self.col_b[i].startswith("Итого"):
+                meta["income"] = {"cats": cats, "total_row": i + 1}
                 break
             code = self.col_b[i]
             if code and "." not in code:
@@ -98,7 +93,8 @@ class SheetMeta:
                 cat_code = code
             elif cat_code and code.startswith(f"{cat_code}."):
                 cats[cat_code]["subs"][code] = {"name": self.col_c[i], "row": i + 1}
-        meta["income"] = {"cats": cats}
+        if "income" not in meta:
+            meta["income"] = {"cats": cats, "total_row": root + 1}
 
     # ───────────── РАСХОДЫ (раздел → категории → подкатегории) ─────────────
     def _scan_expense_tree(self, meta: MetaDoc) -> None:
@@ -125,6 +121,7 @@ class SheetMeta:
                         break
                     if code.startswith("Итого"):
                         section["row_end"] = j + 1
+                        section["total_row"] = j + 1
                         j += 1
                         break
                     if code and "." not in code:
@@ -137,6 +134,10 @@ class SheetMeta:
             expenses[sec_code] = section
             i = j
         meta["expenses"] = expenses
+        # Если не нашли Итого, используем последнюю строку последнего раздела
+        if expenses and not any("total_row" in sec for sec in expenses.values()):
+            last_section = max(expenses.values(), key=lambda x: x["row"])
+            meta["expenses"]["total_row"] = last_section.get("row_end", last_section["row"] + 1)
 
     # ───────────── КРЕДИТОРЫ ─────────────
     def _scan_creditors(self, meta: MetaDoc) -> None:
@@ -162,7 +163,6 @@ class SheetMeta:
 
     # ───────────── МЕТОД-ПУСТЫШКА ─────────────
     def _scan_month_subtotals(self, meta: MetaDoc) -> None:
-        # оставить для совместимости, фактически handled in _scan_date_columns
         pass
 
     # ───────────── СБОРКА META ─────────────

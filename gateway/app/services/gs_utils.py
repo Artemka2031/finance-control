@@ -1,28 +1,41 @@
+# gateway/app/services/gs_utils.py
+# -*- coding: utf-8 -*-
+"""
+Google-Sheets helper: открывает лист «Общая таблица», возвращает
+  - объект Worksheet (gspread)
+  - все строки (list[list[str]])
+  - словарь заметок { "A1" : "note text" }
+
+$ python -m gateway.app.services.gs_utils --help      # CLI-диагностика
+"""
 from __future__ import annotations
 
-import os
-import time
 import functools
 import logging
+import os
 import random
-from typing import Callable, Any, Tuple, List, Dict
+import time
+from typing import Any, Callable, Dict, List, Tuple
 
-from dotenv import load_dotenv
 import gspread
+from dotenv import load_dotenv
+from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-from google.oauth2.service_account import Credentials
 
-# Настройка логирования
-logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(message)s")
-load_dotenv(".env")
+# ─────────────────────────── env / logging ────────────────────────────────
+load_dotenv(".env")  # путь к .env на уровень выше
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
+# сколько строк считывать из таблицы; меняйте в одном месте
+MAX_ROWS = int(os.getenv("GS_MAX_ROWS", "300"))  # A1:ZZ300
 
-# ───────────── helpers ─────────────
+
+# ───────────────────────────── helpers ────────────────────────────────────
 def timeit(tag: str | None = None):
-    """@timeit('msg') – логируем, за сколько отработала функция."""
-
+    """@timeit('msg') – простая метка времени выполнения функции."""
     def deco(func: Callable[..., Any]):
         label = tag or func.__name__
 
@@ -35,13 +48,13 @@ def timeit(tag: str | None = None):
                 log.info("⏱ %s  %.3f s", label, time.perf_counter() - t0)
 
         return wrap
-
     return deco
 
 
 def retry_gs(func: Callable[[], Any], *, retries: int = 5) -> Any:
     """
-    Синхронный вызов Google API с экспоненциальным back-off для обработки ошибок 429/5xx.
+    Выполняет вызов Google-API с экспоненциальным back-off.
+    Повторяет 429/5xx максимум `retries` раз.
     """
     for i in range(retries):
         try:
@@ -57,54 +70,26 @@ def retry_gs(func: Callable[[], Any], *, retries: int = 5) -> Any:
 
 def to_a1(row: int, col: int) -> str:
     """
-    Преобразует координаты (row, col) в адрес A1 (например, row=6, col=32 → 'AF6').
-    row: номер строки (начинается с 1).
-    col: номер столбца (начинается с 1).
+    Преобразует (row, col) → адрес в A1-нотации.
+    row, col начинаются с 1.
     """
     col_str = ""
     while col > 0:
-        col, remainder = divmod(col - 1, 26)
-        col_str = chr(65 + remainder) + col_str
+        col, rem = divmod(col - 1, 26)
+        col_str = chr(65 + rem) + col_str
     return f"{col_str}{row}"
 
 
-def _is_numeric_value(raw: str) -> bool:
-    """Проверяет, является ли значение числовым (аналогично _to_float в sheets_numeric)."""
-    if not raw or raw.strip() == '-':
-        return False
-    cleaned = (
-        raw.replace("\xa0", "")
-        .replace(" ", "")
-        .replace(",", ".")
-        .replace("₽", "")
-        .strip()
-    )
-    if cleaned == '-' or cleaned in (
-            'Экстренныйрезерв',
-            '1.Взяли/2.ПолучилиДОЛГ:',
-            '1.Вернули/2.ДалиДОЛГ:',
-            'СЭКОНОМИЛИ:',
-            'ОСТАТОК-МЫСКОЛЬКОДОЛЖНЫ:'
-    ) or cleaned.startswith('Итого'):
-        return False
-    try:
-        float(cleaned)
-        return True
-    except ValueError:
-        return False
-
-
-# ───────────── Google Sheets I/O ─────────────
-def _client():
+# ─────────────────────── Google Sheets access ─────────────────────────────
+def _client() -> Tuple[gspread.Client, Credentials]:
     scopes = [
-        'https://www.googleapis.com/auth/spreadsheets',
-        'https://www.googleapis.com/auth/drive'
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
     ]
     creds = Credentials.from_service_account_file(
         os.getenv("SHEETS_SERVICE_FILE", "creds.json"),
-        scopes=scopes
+        scopes=scopes,
     )
-    # Явно отключаем file_cache для gspread
     return gspread.authorize(creds), creds
 
 
@@ -115,45 +100,102 @@ def open_worksheet() -> Tuple[gspread.Worksheet, List[List[str]], Dict[str, str]
     if not sheet_id:
         raise ValueError("SPREADSHEET_URL is not set in .env")
 
-    def get_sheet_and_rows():
-        try:
-            sheet = client.open_by_key(sheet_id).worksheet("Общая таблица")
-            rows = sheet.get("A1:ZZ300")
-            # Удаляем пустые строки в конце
-            rows = [row for row in rows if any(cell.strip() for cell in row)]
-            return sheet, rows
-        except gspread.exceptions.SpreadsheetNotFound:
-            log.error("Spreadsheet with ID %s not found or inaccessible", sheet_id)
-            raise
+    def _fetch_rows():
+        sheet = client.open_by_key(sheet_id).worksheet("Общая таблица")
+        rows = sheet.get(f"A1:ZZ{MAX_ROWS}")
+        return sheet, rows  # Не фильтруем пустые строки
 
-    def get_notes(rows: List[List[str]]):
-        service = build('sheets', 'v4', credentials=creds)
-        response = service.spreadsheets().get(
+    def _fetch_notes(rows: List[List[str]]) -> Dict[str, str]:
+        svc = build("sheets", "v4", credentials=creds)
+        resp = svc.spreadsheets().get(
             spreadsheetId=sheet_id,
-            ranges=["Общая таблица!A1:ZZ300"],
-            fields="sheets.data.rowData.values.note"
+            ranges=[f"Общая таблица!A1:ZZ{MAX_ROWS}"],
+            fields="sheets.data.rowData.values.note",
         ).execute()
-        notes = {}
-        # Обрабатываем все строки из ответа API
-        for sheet_row_idx, row in enumerate(response.get('sheets', [{}])[0].get('data', [{}])[0].get('rowData', []),
-                                            start=1):
-            # Проверяем, есть ли соответствующая строка в rows
-            mapped_row_idx = sheet_row_idx  # Прямое соответствие строк
-            row_data = rows[sheet_row_idx - 1] if sheet_row_idx <= len(rows) else []
-            for col_idx, cell in enumerate(row.get('values', []), start=1):
-                note = cell.get('note', '')
-                if note and col_idx <= len(row_data) and _is_numeric_value(row_data[col_idx - 1]):
-                    # Формируем адрес A1
-                    cell_key = to_a1(sheet_row_idx, col_idx)
-                    notes[cell_key] = note
-                    log.debug(
-                        f"Loaded note for {cell_key} (sheet row={sheet_row_idx}, col={col_idx}, value={row_data[col_idx - 1]!r}): {note!r}")
-        log.debug(f"Total notes loaded: {len(notes)}")
+
+        notes: Dict[str, str] = {}
+        for sheet_row_idx, row in enumerate(
+                resp.get("sheets", [{}])[0].get("data", [{}])[0].get("rowData", []),
+                start=1,
+        ):
+            for col_idx, cell in enumerate(row.get("values", []), start=1):
+                note = cell.get("note", "")
+                if note:
+                    addr = to_a1(sheet_row_idx, col_idx)
+                    notes[addr] = note
+        log.debug("Total notes loaded: %d", len(notes))
         return notes
 
-    # Используем синхронный retry_gs
-    sheet, rows = retry_gs(get_sheet_and_rows, retries=5)
-    notes = retry_gs(lambda: get_notes(rows), retries=5)
-
-    log.info("Loaded %d rows from worksheet", len(rows))
+    sheet, rows = retry_gs(_fetch_rows)
+    notes = retry_gs(lambda: _fetch_notes(rows))
+    log.info("Loaded %d rows, %d notes", len(rows), len(notes))
     return sheet, rows, notes
+
+
+# ───────────────────────────── CLI utility ───────────────────────────────
+if __name__ == "__main__":
+    """
+    Быстрый self-check модуля для проверки связи между матрицей значений и заметок.
+      $ python -m gateway.app.services.gs_utils --show 30 --push-redis
+      $ docker exec finance-redis redis-cli FLUSHALL   # обнулить кеш
+    """
+    import argparse
+    import asyncio
+    import re
+    import redis.asyncio as aioredis
+
+
+    def parse_a1_address(addr: str) -> tuple[int, int]:
+        """Разбирает адрес A1 (например, 'AF6') в (row, col)."""
+        match = re.match(r"([A-Z]+)(\d+)", addr)
+        if not match:
+            return 0, 0
+        col_str, row_str = match.groups()
+        col = 0
+        for char in col_str:
+            col = col * 26 + (ord(char) - ord('A') + 1)
+        row = int(row_str)
+        return row, col
+
+
+    p = argparse.ArgumentParser("gs_utils quick-check")
+    p.add_argument("--show", type=int, default=20,
+                   help="Показать N первых заметок с соответствующими значениями")
+    p.add_argument("--push-redis", action="store_true",
+                   help="Сохранить заметки в Redis (ключи comment:<A1>)")
+    args = p.parse_args()
+
+    ws, rows, notes = open_worksheet()
+    print(f"✔️  Worksheet title : {ws.title!r}")
+    print(f"ℹ️  Rows loaded      : {len(rows)}")
+    print(f"📝 Notes discovered  : {len(notes)}")
+
+    # Печатаем первые N заметок с соответствующими значениями
+    print("\n🔍 Checking notes and corresponding values:")
+    for i, (addr, txt) in enumerate(notes.items()):
+        if i >= args.show:
+            break
+        # Разбираем адрес A1 в row, col
+        row, col = parse_a1_address(addr)
+        # Корректируем для 0-based индексов в rows
+        row_idx = row - 1
+        col_idx = col - 1
+        value = "<out of bounds>"
+        if row_idx < len(rows) and col_idx < len(rows[row_idx]):
+            value = rows[row_idx][col_idx].strip() if rows[row_idx][col_idx] else "<empty>"
+        print(f"{addr:<6} → Note: {txt[:80]!r:<80} | Value: {value!r}")
+
+    # Опционально пушим в Redis
+    if args.push_redis:
+        async def _push():
+            r = aioredis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"),
+                                  encoding="utf-8", decode_responses=True)
+            pipe = r.pipeline()
+            for addr, txt in notes.items():
+                pipe.set(f"comment:{addr}", txt, ex=3600)
+            await pipe.execute()
+            await r.close()
+            print(f"✅ {len(notes)} notes cached to Redis")
+
+
+        asyncio.run(_push())

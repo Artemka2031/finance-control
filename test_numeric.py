@@ -18,7 +18,7 @@ async def run_tests():
 
     # Запрос 2: Данные о расходах за период 25.11.2024 - 01.12.2024
     try:
-        result2 = await sn.period_expense_summary("25.11.2024", "01.12.2024", level="subcategory", zero_suppress=True)
+        result2 = await sn.period_expense_summary("25.11.2024", "01.12.2024", level="subcategory", zero_suppress=False, include_comments=True)
         with open("tests/request2_expenses_25_11_to_01_12.json", "w", encoding="utf-8") as f:
             json.dump(result2, f, ensure_ascii=False, indent=4)
         print("Request 2 saved to tests/request2_expenses_25_11_to_01_12.json")

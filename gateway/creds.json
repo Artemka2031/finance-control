@@ -1,0 +1,13 @@
+{
+  "type": "service_account",
+  "project_id": "financebot-378313",
+  "private_key_id": "a2a2482257343812fe073cbd9a6ef66495d7d7b9",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDt/AY16ceTfoF3\np6byLdsVTTOKlZ1jXcWDgxB96UJ4jvlsnV0Oot6GhJ9zCBE+pVv3hCIoy23bJPfG\nRUtPx6bLlhDj6kMahgqYYE7C8QLwKI5w5l59ZrGeFz7r2pkch9hB1hNCCnEh0Ojz\n6O5/VenO0ft10Lfjxk9Mn33RxGbjSb9XbF9v1Ox7ApOKvhgXitjUf8Slrn/OrR/Z\n2mv4Fxex6FDu45PP/X0Cu8aT5nH8ciSrSPJhmjLCgGrc6FX2ErgZ9NRxrFvylsp+\nVNw2Cib89Q0GRvB1nA6K22Ki7u7RD3YLA5SF3vFzaerAv+aSRJ9RKQnrjd7aVp0D\nnX8++ct9AgMBAAECggEAXU7cooPMJ8TIf0EhAEBBb0srI7GAmYaZG/Sl4TA1Sy6H\nlfHnHAd4pxZVrBTkKgNMmTHZ8NO9+Ve3vCnMGvYlLBpk+e+OKtaWTeMozl8Pr1i/\nbH2uW42Jo3nqxi+Zq6mJfVqxh0mvzLnrtEJGTG/Dcb870BgrGWfWDK1V+AqA6qjs\ngJYbn27m0LikuYLyyyD8xs8DfyvhXWK9InCMHlOUYa692IeN7MEQ47Ntfzq8MV+8\n99eWnBkhrZH2qEV2QxPjtxTCSKUiUniJkQc4jNXlizLojhkUzngJnOoW4rrcr7OT\nE9fGDa3WH4549wp7UzOswUDTs8DnM9B8rvCgnEIJYwKBgQD7x79jXb/N8s/ZkcZP\nLE/rTRKOH1nJDduJdaxxRGmO6cjPM4NH5m9zwQdFPqKTaSj29If4DBzEBl5c3MSO\nGDF6rvBG2IC1WJZ92Tyc8LqfSZuGNp7J/LkKQc8F4IFIpl2n1cWlfXIzoqlZtxLS\nPM8L5Lq2g7vMY08AQYA0J7fg0wKBgQDx+RYdiQ70bEH+ur+PwFjsAbj1FkUqoNZD\nyuysHwucfFCMbKGDgcCNIIaUXZEbaYwYc9AfMc+HTmQYlrT2u0MxC2PIwjLCdOQZ\nZoFdPk1mNF+2A9c+3FjpPyc20+plAlt/6nZehcDayxy/WZLVa/NMHD1CYNXpyh4t\nnRWfFrFwbwKBgQDuCMdZYv198KwurpHEskkQVTpQoTUaTn6ac2THZP1C/qU5tyLL\nbAE8d2avQWskYEw5Ra/yg0kCzl6R/qnZCOhma1OANxlf2VPVwPZ8DV7yTv25IpR2\ns/Ygy1y02q5/h8GNdh44ueOpC4R97AXgO1snjGQ1P0/iCJVc0ZAqPs6pvwKBgC9m\nYeSrQpiy1EK4Bmp8fW7N75NjJ21wUEi7aZ1V/4pJ9+VqKkF+m1+J7ZMGuTQretwX\nY7+YnFSfEJCYhR6IFGN5HbToBdV93Gj1YYYIfFT3EYCwQ+v2chxO2LmuzY235oCq\nR0HA5cR2YU1CmLbiDKjuJznnij/f7gV1bhTZ9yxVAoGAGNoc/j5eBKxkdoj9xV2y\nFksYU83TtCrOiU3/fluuvXI55/Kr6Fnb7EC1rLki+og+qXxRhCL9t6mlj6eWDr5H\n4oYhnNcqPvpHew7m0lLy+lziU6zQT8EO0xHvL5yCZ8nhkkVboEtWb0p8ckXKVn/i\nItpSoXr+Qo0drddsM6e4mU0=\n-----END PRIVATE KEY-----\n",
+  "client_email": "financialbot@financebot-378313.iam.gserviceaccount.com",
+  "client_id": "100144870623681227965",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/financialbot%40financebot-378313.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}
