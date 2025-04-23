@@ -9,16 +9,16 @@ from typing import Any, Callable, Dict, List, Literal, Tuple
 
 import redis.asyncio as aioredis
 from dotenv import load_dotenv
-from gspread.utils import rowcol_to_a1
 from tqdm import tqdm
 
-from .gs_utils import open_worksheet, timeit
+from .gs_utils import open_worksheet, timeit, to_a1
 from .sheets_meta import SheetMeta
 
 # Настройка логирования
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(message)s")
 load_dotenv(".env")
 log = logging.getLogger(__name__)
+
 
 # ────────────────────────── service class ──────────────────────────
 class SheetNumeric:
@@ -29,7 +29,7 @@ class SheetNumeric:
         log.info("Building float matrix for %d rows", len(self.rows))
         self.matrix: List[List[float]] = []
         for row_idx, row in enumerate(tqdm(self.rows, desc="Converting to float matrix")):
-            row_values = [SheetNumeric._to_float(c, row_idx + 1, col_idx + 1) for col_idx, c in enumerate(row)]
+            row_values = [SheetNumeric._to_float(c) for c in row]
             self.matrix.append(row_values)
         self.redis = aioredis.from_url(
             os.getenv("REDIS_URL", "redis://localhost:6379/0"),
@@ -40,7 +40,7 @@ class SheetNumeric:
 
     # ─── helpers ───────────────────────────────────────────────────
     @staticmethod
-    def _to_float(raw: str, row: int, col: int) -> float:
+    def _to_float(raw: str) -> float:
         if not raw or raw.strip() == '-':
             return 0.0
         cleaned = (
@@ -50,7 +50,6 @@ class SheetNumeric:
             .replace("₽", "")
             .strip()
         )
-        log.debug(f"Row {row}, Col {col}: Converting raw value {raw!r} to float: cleaned = {cleaned!r}")
         if cleaned == '-':
             return 0.0
         if cleaned in (
@@ -64,7 +63,6 @@ class SheetNumeric:
         try:
             return float(cleaned)
         except ValueError:
-            log.debug(f"Row {row}, Col {col}: Failed to convert {cleaned!r} to float, returning 0.0")
             return 0.0
 
     def _cell(self, row: int, col: int) -> float:
@@ -82,12 +80,14 @@ class SheetNumeric:
         return data
 
     async def _get_comment(self, row: int, col: int) -> str:
-        cell_address = rowcol_to_a1(row, col)
-        key = f"comment:{cell_address}"
+        # Формируем ключ в формате A1
+        cell_key = to_a1(row, col)
+        key = f"comment:{cell_key}"
         comment = await self.redis.get(key)
         if comment is None:
-            comment = self.notes.get(cell_address, "")
-            await self.redis.set(key, comment, ex=3600)  # Кэшируем на 1 час
+            comment = self.notes.get(cell_key, "")
+            log.debug(f"Fetching comment for {cell_key} (row={row}, col={col}): {comment!r}")
+            await self.redis.set(key, comment, ex=3600)
         return comment
 
     # ─── tree-roll для расходов ────────────────────────────────────
@@ -134,18 +134,23 @@ class SheetNumeric:
             out[cred_code] = {"name": cred_code, "balance": balance, "comment": comment}
         return out
 
-    async def _process_income_items(self, col: int, include_comments: bool) -> Tuple[float, List[Dict[str, Any]]]:
+    async def _process_income_items(self, col: int, include_comments: bool, zero_suppress: bool = False,
+                                    level: Literal["section", "category", "subcategory"] = "subcategory") -> Tuple[
+        float, List[Dict[str, Any]]]:
         inc_total = 0.0
         inc_items = []
-        for cat_code, cat in self.meta["income"]["cats"].items():
+        for cat_code, cat in self.meta["income"].get("cats", {}).items():
             v_cat = self._cell(cat["row"], col)
             comment = await self._get_comment(cat["row"], col) if include_comments else ""
-            inc_items.append({"code": cat_code, "name": cat["name"], "amount": v_cat, "comment": comment})
+            if not zero_suppress or v_cat != 0.0:
+                if level != "section":
+                    inc_items.append({"code": cat_code, "name": cat["name"], "amount": v_cat, "comment": comment})
             inc_total += v_cat
-            for sub_code, sub in cat["subs"].items():
+            for sub_code, sub in cat.get("subs", {}).items():
                 v_sub = self._cell(sub["row"], col)
                 comment = await self._get_comment(sub["row"], col) if include_comments else ""
-                inc_items.append({"code": sub_code, "name": sub["name"], "amount": v_sub, "comment": comment})
+                if not zero_suppress or v_sub != 0.0:
+                    inc_items.append({"code": sub_code, "name": sub["name"], "amount": v_sub, "comment": comment})
                 inc_total += v_sub
         return inc_total, inc_items
 
@@ -164,28 +169,14 @@ class SheetNumeric:
                 raise ValueError(f"Date {date} not in metadata")
 
             # ─ income ─
-            inc_total = 0.0
-            inc_items = []
-            for cat_code, cat in self.meta["income"]["cats"].items():
-                v_cat = self._cell(cat["row"], col)
-                comment = await self._get_comment(cat["row"], col) if include_comments else ""
-                if not zero_suppress or v_cat != 0.0:
-                    if level != "section":
-                        inc_items.append({"code": cat_code, "name": cat["name"], "amount": v_cat, "comment": comment})
-                inc_total += v_cat
-                for sub_code, sub in cat["subs"].items():
-                    v_sub = self._cell(sub["row"], col)
-                    comment = await self._get_comment(sub["row"], col) if include_comments else ""
-                    if not zero_suppress or v_sub != 0.0:
-                        inc_items.append({"code": sub_code, "name": sub["name"], "amount": v_sub, "comment": comment})
-                    inc_total += v_sub
+            inc_total, inc_items = await self._process_income_items(col, include_comments, zero_suppress, level)
 
             # ─ expense ─
-            exp_tree = await self._roll(col, level, zero_suppress, include_comments)  # Await the coroutine
+            exp_tree = await self._roll(col, level, zero_suppress, include_comments)
             exp_total = sum(s["amount"] for s in exp_tree.values())
 
             # ─ creditors ─
-            cred_tree = await self._roll_creditors(col, zero_suppress, include_comments)  # Await the coroutine
+            cred_tree = await self._roll_creditors(col, zero_suppress, include_comments)
             cred_total = sum(c["balance"] for c in cred_tree.values())
 
             # ─ monthly progress ─
@@ -248,7 +239,7 @@ class SheetNumeric:
         inc_total, inc_items = await self._process_income_items(col, include_comments)
 
         # Получаем детализированные расходы с комментариями
-        exp_tree = self._roll(col, "subcategory", zero_suppress=False, include_comments=include_comments)
+        exp_tree = await self._roll(col, "subcategory", zero_suppress=False, include_comments=include_comments)
         exp_total = sum(s["amount"] for s in exp_tree.values())
 
         # Получаем кредиторов с комментариями, исключая служебные поля
@@ -405,7 +396,7 @@ class SheetNumeric:
         inc = sum(
             self._cell(cat["row"], col) +
             sum(self._cell(sub["row"], col) for sub in cat["subs"].values())
-            for cat in self.meta["income"]["cats"].values()
+            for cat in self.meta["income"].get("cats", {}).values()
         )
         exp = 0.0
         for sec in self.meta["expenses"].values():
@@ -456,6 +447,7 @@ class SheetNumeric:
             log.info("Caching month totals for %s", ym)
             await self.month_totals(ym)
 
+
 # ────────────────────────── CLI demo ─────────────────────────────
 @timeit("CLI demo")
 async def _demo():
@@ -472,6 +464,7 @@ async def _demo():
     print("\n▶ month", ym, await sn.month_totals(ym))
     print("\n▶ months overview")
     pprint.pp(await sn.months_overview(), width=120)
+
 
 if __name__ == "__main__":
     asyncio.run(_demo())

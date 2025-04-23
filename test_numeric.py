@@ -43,5 +43,20 @@ async def run_tests():
     except ValueError as e:
         print(f"Error in request 4: {e}")
 
+    # Запрос 5: Данные о расходах за период 25.11.2024 - 01.12.2024 с комментариями
+    try:
+        result5 = await sn.period_expense_summary(
+            "25.11.2024",
+            "01.12.2024",
+            level="subcategory",
+            zero_suppress=False,
+            include_comments=True
+        )
+        with open("tests/request5_expenses_25_11_to_01_12_with_comments.json", "w", encoding="utf-8") as f:
+            json.dump(result5, f, ensure_ascii=False, indent=4)
+        print("Request 5 saved to tests/request5_expenses_25_11_to_01_12_with_comments.json")
+    except ValueError as e:
+        print(f"Error in request 5: {e}")
+
 if __name__ == "__main__":
     asyncio.run(run_tests())
