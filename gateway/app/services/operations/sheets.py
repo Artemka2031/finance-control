@@ -29,41 +29,83 @@ class GoogleSheetsService:
             if not self._initialized:
                 start_time = time.time()
                 log.info("Initializing GoogleSheetsService")
-                self.redis = await get_redis()
+                if self.redis is None:
+                    self.redis = await get_redis()
+                # Проверяем доступные ключи до инициализации
+                redis_keys_before = await self.redis.keys("*:*")
+                log.info(f"Cache keys before initialization: {redis_keys_before}")
                 try:
+                    log.debug("Starting SheetMeta initialization")
                     self.meta = SheetMeta()
-                    self.meta.meta = await self.meta.build_meta()  # Загружаем данные и строим метаданные
+                    self.meta.meta = await self.meta.build_meta()
+                    log.debug("SheetMeta initialization completed")
+
+                    log.debug("Starting SheetNumeric initialization")
                     self.numeric = SheetNumeric()
                     await self.numeric.initialize()
+                    log.debug("SheetNumeric initialization completed")
+
                     self._start_task_worker()
                     self._initialized = True
                     duration = (time.time() - start_time) * 1000
                     log.info(f"GoogleSheetsService initialized in {duration:.2f} ms")
+
+                    # Проверяем, что данные сохранены в кэш
+                    redis_keys_after = await self.redis.keys("sheet:*")
+                    log.info(f"Cache keys after initialization: {redis_keys_after}")
                 except Exception as e:
-                    log.error(f"Failed to initialize GoogleSheetsService: {e}")
+                    log.error(f"Failed to initialize GoogleSheetsService: {str(e)}", exc_info=True)
+                    redis_keys_failed = await self.redis.keys("*:*")
+                    log.info(f"Cache keys after failed initialization: {redis_keys_failed}")
                     raise
             else:
                 log.debug("GoogleSheetsService already initialized")
 
     async def refresh_data(self):
-        """Принудительно обновляет данные, инвалидируя кэш."""
+        import traceback
+        log.debug(f"refresh_data called from: {''.join(traceback.format_stack()[:-1])}")
         async with self._init_lock:
             log.info("Refreshing data and invalidating cache")
             if self.redis is None:
                 self.redis = await get_redis()
-            keys = await self.redis.keys("sheet:*")
-            keys += await self.redis.keys("daydetail:*")
-            keys += await self.redis.keys("month:*")
-            keys += await self.redis.keys("periodsummary:*")
-            keys += await self.redis.keys("months:overview:*")
-            if keys:
-                await self.redis.delete(*keys)
-                log.info(f"Invalidated cache keys: {keys}")
-            else:
-                log.debug("No cache keys found to invalidate")
-            self._initialized = False
-            await self.initialize()
-            log.info("Data refresh completed")
+            try:
+                # Проверяем все доступные ключи до инвалидации
+                all_keys_before = await self.redis.keys("*:*")
+                log.info(f"All cache keys before invalidation: {all_keys_before}")
+
+                keys = await self.redis.keys("sheet:*")
+                keys += await self.redis.keys("daydetail:*")
+                keys += await self.redis.keys("month:*")
+                keys += await self.redis.keys("periodsummary:*")
+                keys += await self.redis.keys("months:overview:*")
+                if keys:
+                    await self.redis.delete(*keys)
+                    log.info(f"Invalidated cache keys: {keys}")
+                else:
+                    log.debug("No cache keys found to invalidate")
+
+                # Проверяем ключи после инвалидации
+                all_keys_after_invalidation = await self.redis.keys("*:*")
+                log.info(f"All cache keys after invalidation: {all_keys_after_invalidation}")
+
+                log.debug("Resetting initialization state")
+                self._initialized = False
+
+                log.debug("Calling initialize after cache invalidation")
+                await self.initialize()
+
+                log.info("Data refresh completed")
+
+                # Проверяем, что данные сохранены в кэш после инициализации
+                redis_keys = await self.redis.keys("sheet:*")
+                all_keys_after_refresh = await self.redis.keys("*:*")
+                log.info(f"Cache keys after refresh (sheet:*): {redis_keys}")
+                log.info(f"All cache keys after refresh: {all_keys_after_refresh}")
+            except Exception as e:
+                log.error(f"Failed to refresh data: {str(e)}", exc_info=True)
+                redis_keys_failed = await self.redis.keys("*:*")
+                log.info(f"Cache keys after failed refresh: {redis_keys_failed}")
+                raise
 
     async def queue_task(self, operation: str, payload: Dict, user_id: str) -> str:
         async with self._init_lock:

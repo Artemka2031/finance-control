@@ -241,8 +241,8 @@ async def get_metadata(service: GoogleSheetsService = Depends(get_sheets_service
     """
     log.info("Fetching metadata from GoogleSheetsService")
     try:
-        meta = service.meta  # meta — это словарь, возвращённый build_meta
-        # log.info(f"Metadata fetched: date_cols={list(meta['date_cols'].keys())}")
+        meta = service.meta.meta  # meta — это словарь, возвращённый build_meta
+        log.info(f"Metadata fetched: date_cols={list(meta['date_cols'].keys())}")
         return meta
     except Exception as e:
         log.error(f"Failed to fetch metadata: {e}")

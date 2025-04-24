@@ -248,7 +248,7 @@ class SheetMeta:
         # Проверяем кэш сырых данных
         cached_raw = await self._load_cached_raw_data()
         if cached_raw:
-            log.debug("Using cached raw data")
+            log.debug(f"Using cached raw data: rows={len(cached_raw[0])}, notes={len(cached_raw[1])}")
             self.rows, self.notes = cached_raw
         else:
             # Загружаем данные из Google Sheets
