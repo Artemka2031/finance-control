@@ -15,7 +15,24 @@ from ..core import log, get_async_worksheet, get_redis, COMMENT_TEMPLATES, to_a1
 
 
 class GoogleSheetsService:
+    _instance = None
+    _lock = asyncio.Lock()
+
+    @classmethod
+    async def get_instance(cls) -> "GoogleSheetsService":
+        async with cls._lock:
+            if cls._instance is None:
+                log.info("Creating new GoogleSheetsService instance")
+                cls._instance = cls()
+                await cls._instance.initialize()
+            else:
+                log.debug(f"Returning existing GoogleSheetsService instance: {id(cls._instance)}")
+            return cls._instance
+
     def __init__(self):
+        if GoogleSheetsService._instance is not None:
+            raise RuntimeError("Use GoogleSheetsService.get_instance() to access the singleton instance")
+        log.debug(f"Initializing new GoogleSheetsService instance: {id(self)}")
         self.redis = None
         self.task_queue = asyncio.Queue()
         self.meta = None
@@ -25,24 +42,46 @@ class GoogleSheetsService:
         self._init_lock = asyncio.Lock()
 
     async def initialize(self):
+        log.warning(f"Initializing GoogleSheetsService, self._init_lock: {self._init_lock}, instance: {id(self)}")
         async with self._init_lock:
+            log.debug(f"Acquired _init_lock for initialize, instance: {id(self)}")
             if not self._initialized:
                 start_time = time.time()
                 log.info("Initializing GoogleSheetsService")
                 if self.redis is None:
-                    self.redis = await get_redis()
-                # Проверяем доступные ключи до инициализации
+                    try:
+                        self.redis = await get_redis()
+                        log.debug("Successfully connected to Redis")
+                    except Exception as e:
+                        log.error(f"Failed to connect to Redis: {str(e)}", exc_info=True)
+                        raise
                 redis_keys_before = await self.redis.keys("*:*")
                 log.info(f"Cache keys before initialization: {redis_keys_before}")
                 try:
                     log.debug("Starting SheetMeta initialization")
-                    self.meta = SheetMeta()
-                    self.meta.meta = await self.meta.build_meta()
+                    if not isinstance(self.meta, SheetMeta):
+                        self.meta = SheetMeta()
+                    try:
+                        self.meta.meta = await asyncio.wait_for(
+                            self.meta.build_meta(),
+                            timeout=30.0
+                        )
+                    except asyncio.TimeoutError:
+                        log.error("Timeout while building SheetMeta")
+                        raise
                     log.debug("SheetMeta initialization completed")
 
                     log.debug("Starting SheetNumeric initialization")
-                    self.numeric = SheetNumeric()
-                    await self.numeric.initialize()
+                    if self.numeric is None:
+                        self.numeric = SheetNumeric(meta=self.meta)
+                    try:
+                        await asyncio.wait_for(
+                            self.numeric.initialize(),
+                            timeout=30.0
+                        )
+                    except asyncio.TimeoutError:
+                        log.error("Timeout while initializing SheetNumeric")
+                        raise
                     log.debug("SheetNumeric initialization completed")
 
                     self._start_task_worker()
@@ -50,26 +89,32 @@ class GoogleSheetsService:
                     duration = (time.time() - start_time) * 1000
                     log.info(f"GoogleSheetsService initialized in {duration:.2f} ms")
 
-                    # Проверяем, что данные сохранены в кэш
                     redis_keys_after = await self.redis.keys("sheet:*")
                     log.info(f"Cache keys after initialization: {redis_keys_after}")
-                except Exception as e:
+                except (Exception, BaseException) as e:
                     log.error(f"Failed to initialize GoogleSheetsService: {str(e)}", exc_info=True)
                     redis_keys_failed = await self.redis.keys("*:*")
                     log.info(f"Cache keys after failed initialization: {redis_keys_failed}")
                     raise
             else:
                 log.debug("GoogleSheetsService already initialized")
+            log.debug(f"Releasing _init_lock for initialize, instance: {id(self)}")
 
-    async def refresh_data(self):
-        import traceback
-        log.debug(f"refresh_data called from: {''.join(traceback.format_stack()[:-1])}")
+    async def refresh_cache(self):
+        log.info(f"Refreshing cache and data, instance: {id(self)}")
         async with self._init_lock:
-            log.info("Refreshing data and invalidating cache")
+            log.debug(f"Acquired _init_lock for refresh_cache, instance: {id(self)}")
+            if not self._initialized:
+                log.error("Service not initialized, cannot refresh cache")
+                raise RuntimeError("GoogleSheetsService not initialized")
             if self.redis is None:
-                self.redis = await get_redis()
+                try:
+                    self.redis = await get_redis()
+                    log.debug("Successfully connected to Redis")
+                except Exception as e:
+                    log.error(f"Failed to connect to Redis: {str(e)}", exc_info=True)
+                    raise
             try:
-                # Проверяем все доступные ключи до инвалидации
                 all_keys_before = await self.redis.keys("*:*")
                 log.info(f"All cache keys before invalidation: {all_keys_before}")
 
@@ -84,28 +129,45 @@ class GoogleSheetsService:
                 else:
                     log.debug("No cache keys found to invalidate")
 
-                # Проверяем ключи после инвалидации
                 all_keys_after_invalidation = await self.redis.keys("*:*")
                 log.info(f"All cache keys after invalidation: {all_keys_after_invalidation}")
 
-                log.debug("Resetting initialization state")
-                self._initialized = False
+                log.debug("Refreshing SheetMeta data")
+                try:
+                    self.meta.meta = await asyncio.wait_for(
+                        self.meta.build_meta(),
+                        timeout=30.0
+                    )
+                except asyncio.TimeoutError:
+                    log.error("Timeout while refreshing SheetMeta")
+                    raise
 
-                log.debug("Calling initialize after cache invalidation")
-                await self.initialize()
+                log.debug("Refreshing SheetNumeric data")
+                try:
+                    await asyncio.wait_for(
+                        self.numeric.initialize(),
+                        timeout=30.0
+                    )
+                except asyncio.TimeoutError:
+                    log.error("Timeout while refreshing SheetNumeric")
+                    raise
 
-                log.info("Data refresh completed")
+                log.info("Cache and data refresh completed")
 
-                # Проверяем, что данные сохранены в кэш после инициализации
                 redis_keys = await self.redis.keys("sheet:*")
                 all_keys_after_refresh = await self.redis.keys("*:*")
                 log.info(f"Cache keys after refresh (sheet:*): {redis_keys}")
                 log.info(f"All cache keys after refresh: {all_keys_after_refresh}")
-            except Exception as e:
-                log.error(f"Failed to refresh data: {str(e)}", exc_info=True)
+            except (Exception, BaseException) as e:
+                log.error(f"Failed to refresh cache: {str(e)}", exc_info=True)
                 redis_keys_failed = await self.redis.keys("*:*")
                 log.info(f"Cache keys after failed refresh: {redis_keys_failed}")
                 raise
+            log.debug(f"Releasing _init_lock for refresh_cache, instance: {id(self)}")
+
+    async def refresh_data(self):
+        log.warning("refresh_data is deprecated, use refresh_cache instead")
+        await self.refresh_cache()
 
     async def queue_task(self, operation: str, payload: Dict, user_id: str) -> str:
         async with self._init_lock:
@@ -180,6 +242,7 @@ class GoogleSheetsService:
         log.info("Task worker started")
 
     async def _invalidate_cache(self, payload: Dict):
+        log.debug(f"Invalidating cache, instance: {id(self)}")
         if self.redis is None:
             self.redis = await get_redis()
         date = payload.get("date")
@@ -197,29 +260,29 @@ class GoogleSheetsService:
         if keys:
             await self.redis.delete(*keys)
             log.info(f"Invalidated cache keys: {keys}")
-        # Обновляем meta и numeric
-        self._initialized = False
-        await self.initialize()
+        log.debug(f"Calling refresh_cache from _invalidate_cache, instance: {id(self)}")
+        await self.refresh_cache()
 
     async def _add_expense(self, ws: gspread_asyncio.AsyncioGspreadWorksheet, payload: Dict):
         date = payload["date"]
-        chapter = payload["chapter"]
-        category = payload["category"]
+        sec_code = payload["sec_code"]
+        cat_code = payload["cat_code"]
+        sub_code = payload["sub_code"]
         amount = payload["amount"]
         comment = payload.get("comment", "")
 
-        col = self.meta["date_cols"].get(date)
+        col = self.meta.meta["date_cols"].get(date)
         if not col:
             raise ValueError(f"Date {date} not found in metadata")
-        section = self.meta["expenses"].get(chapter)
+        section = self.meta.meta["expenses"].get(sec_code)
         if not section:
-            raise ValueError(f"Chapter {chapter} not found in metadata")
-        cat = section["cats"].get(category)
+            raise ValueError(f"Section {sec_code} not found in metadata")
+        cat = section["cats"].get(cat_code)
         if not cat:
-            raise ValueError(f"Category {category} not found in metadata")
-        sub = cat["subs"].get(category)
+            raise ValueError(f"Category {cat_code} not found in metadata")
+        sub = cat["subs"].get(sub_code)
         if not sub:
-            raise ValueError(f"Subcategory {category} not found in metadata")
+            raise ValueError(f"Subcategory {sub_code} not found in metadata")
 
         cell = to_a1(sub["row"], col)
         try:
@@ -239,22 +302,23 @@ class GoogleSheetsService:
 
     async def _remove_expense(self, ws: gspread_asyncio.AsyncioGspreadWorksheet, payload: Dict):
         date = payload["date"]
-        chapter = payload["chapter"]
-        category = payload["category"]
+        sec_code = payload["sec_code"]
+        cat_code = payload["cat_code"]
+        sub_code = payload["sub_code"]
         amount = payload["amount"]
 
-        col = self.meta["date_cols"].get(date)
+        col = self.meta.meta["date_cols"].get(date)
         if not col:
             raise ValueError(f"Date {date} not found in metadata")
-        section = self.meta["expenses"].get(chapter)
+        section = self.meta.meta["expenses"].get(sec_code)
         if not section:
-            raise ValueError(f"Chapter {chapter} not found in metadata")
-        cat = section["cats"].get(category)
+            raise ValueError(f"Section {sec_code} not found in metadata")
+        cat = section["cats"].get(cat_code)
         if not cat:
-            raise ValueError(f"Category {category} not found in metadata")
-        sub = cat["subs"].get(category)
+            raise ValueError(f"Category {cat_code} not found in metadata")
+        sub = cat["subs"].get(sub_code)
         if not sub:
-            raise ValueError(f"Subcategory {category} not found in metadata")
+            raise ValueError(f"Subcategory {sub_code} not found in metadata")
 
         cell = to_a1(sub["row"], col)
         try:
@@ -268,16 +332,16 @@ class GoogleSheetsService:
 
     async def _add_income(self, ws: gspread_asyncio.AsyncioGspreadWorksheet, payload: Dict):
         date = payload["date"]
-        category = payload["category"]
+        cat_code = payload["cat_code"]
         amount = payload["amount"]
         comment = payload.get("comment", "")
 
-        col = self.meta["date_cols"].get(date)
+        col = self.meta.meta["date_cols"].get(date)
         if not col:
             raise ValueError(f"Date {date} not found in metadata")
-        cat = self.meta["income"]["cats"].get(category)
+        cat = self.meta.meta["income"]["cats"].get(cat_code)
         if not cat:
-            raise ValueError(f"Category {category} not found in metadata")
+            raise ValueError(f"Category {cat_code} not found in metadata")
 
         cell = to_a1(cat["row"], col)
         try:
@@ -297,15 +361,15 @@ class GoogleSheetsService:
 
     async def _remove_income(self, ws: gspread_asyncio.AsyncioGspreadWorksheet, payload: Dict):
         date = payload["date"]
-        category = payload["category"]
+        cat_code = payload["cat_code"]
         amount = payload["amount"]
 
-        col = self.meta["date_cols"].get(date)
+        col = self.meta.meta["date_cols"].get(date)
         if not col:
             raise ValueError(f"Date {date} not found in metadata")
-        cat = self.meta["income"]["cats"].get(category)
+        cat = self.meta.meta["income"]["cats"].get(cat_code)
         if not cat:
-            raise ValueError(f"Category {category} not found in metadata")
+            raise ValueError(f"Category {cat_code} not found in metadata")
 
         cell = to_a1(cat["row"], col)
         try:
@@ -318,17 +382,17 @@ class GoogleSheetsService:
             raise
 
     async def _record_borrowing(self, ws: gspread_asyncio.AsyncioGspreadWorksheet, payload: Dict):
-        creditor_name = payload["creditor_name"]
+        cred_code = payload["cred_code"]
         date = payload["date"]
         amount = payload["amount"]
         comment = payload.get("comment", "")
 
-        col = self.meta["date_cols"].get(date)
+        col = self.meta.meta["date_cols"].get(date)
         if not col:
             raise ValueError(f"Date {date} not found in metadata")
-        creditor = self.meta["creditors"].get(creditor_name)
+        creditor = self.meta.meta["creditors"].get(cred_code)
         if not creditor:
-            raise ValueError(f"Creditor {creditor_name} not found in metadata")
+            raise ValueError(f"Creditor {cred_code} not found in metadata")
 
         cell = to_a1(creditor["base"], col)
         try:
@@ -347,16 +411,16 @@ class GoogleSheetsService:
             raise
 
     async def _remove_borrowing(self, ws: gspread_asyncio.AsyncioGspreadWorksheet, payload: Dict):
-        creditor_name = payload["creditor_name"]
+        cred_code = payload["cred_code"]
         date = payload["date"]
         amount = payload["amount"]
 
-        col = self.meta["date_cols"].get(date)
+        col = self.meta.meta["date_cols"].get(date)
         if not col:
             raise ValueError(f"Date {date} not found in metadata")
-        creditor = self.meta["creditors"].get(creditor_name)
+        creditor = self.meta.meta["creditors"].get(cred_code)
         if not creditor:
-            raise ValueError(f"Creditor {creditor_name} not found in metadata")
+            raise ValueError(f"Creditor {cred_code} not found in metadata")
 
         cell = to_a1(creditor["base"], col)
         try:
@@ -369,17 +433,17 @@ class GoogleSheetsService:
             raise
 
     async def _record_repayment(self, ws: gspread_asyncio.AsyncioGspreadWorksheet, payload: Dict):
-        creditor_name = payload["creditor_name"]
+        cred_code = payload["cred_code"]
         date = payload["date"]
         amount = payload["amount"]
         comment = payload.get("comment", "")
 
-        col = self.meta["date_cols"].get(date)
+        col = self.meta.meta["date_cols"].get(date)
         if not col:
             raise ValueError(f"Date {date} not found in metadata")
-        creditor = self.meta["creditors"].get(creditor_name)
+        creditor = self.meta.meta["creditors"].get(cred_code)
         if not creditor:
-            raise ValueError(f"Creditor {creditor_name} not found in metadata")
+            raise ValueError(f"Creditor {cred_code} not found in metadata")
 
         cell = to_a1(creditor["base"] + 1, col)
         try:
@@ -398,16 +462,16 @@ class GoogleSheetsService:
             raise
 
     async def _remove_repayment(self, ws: gspread_asyncio.AsyncioGspreadWorksheet, payload: Dict):
-        creditor_name = payload["creditor_name"]
+        cred_code = payload["cred_code"]
         date = payload["date"]
         amount = payload["amount"]
 
-        col = self.meta["date_cols"].get(date)
+        col = self.meta.meta["date_cols"].get(date)
         if not col:
             raise ValueError(f"Date {date} not found in metadata")
-        creditor = self.meta["creditors"].get(creditor_name)
+        creditor = self.meta.meta["creditors"].get(cred_code)
         if not creditor:
-            raise ValueError(f"Creditor {creditor_name} not found in metadata")
+            raise ValueError(f"Creditor {cred_code} not found in metadata")
 
         cell = to_a1(creditor["base"] + 1, col)
         try:
@@ -420,17 +484,17 @@ class GoogleSheetsService:
             raise
 
     async def _record_saving(self, ws: gspread_asyncio.AsyncioGspreadWorksheet, payload: Dict):
-        creditor_name = payload["creditor_name"]
+        cred_code = payload["cred_code"]
         date = payload["date"]
         amount = payload["amount"]
         comment = payload.get("comment", "")
 
-        col = self.meta["date_cols"].get(date)
+        col = self.meta.meta["date_cols"].get(date)
         if not col:
             raise ValueError(f"Date {date} not found in metadata")
-        creditor = self.meta["creditors"].get(creditor_name)
+        creditor = self.meta.meta["creditors"].get(cred_code)
         if not creditor:
-            raise ValueError(f"Creditor {creditor_name} not found in metadata")
+            raise ValueError(f"Creditor {cred_code} not found in metadata")
 
         cell = to_a1(creditor["base"] + 2, col)
         try:
@@ -449,16 +513,16 @@ class GoogleSheetsService:
             raise
 
     async def _remove_saving(self, ws: gspread_asyncio.AsyncioGspreadWorksheet, payload: Dict):
-        creditor_name = payload["creditor_name"]
+        cred_code = payload["cred_code"]
         date = payload["date"]
         amount = payload["amount"]
 
-        col = self.meta["date_cols"].get(date)
+        col = self.meta.meta["date_cols"].get(date)
         if not col:
             raise ValueError(f"Date {date} not found in metadata")
-        creditor = self.meta["creditors"].get(creditor_name)
+        creditor = self.meta.meta["creditors"].get(cred_code)
         if not creditor:
-            raise ValueError(f"Creditor {creditor_name} not found in metadata")
+            raise ValueError(f"Creditor {cred_code} not found in metadata")
 
         cell = to_a1(creditor["base"] + 2, col)
         try:
@@ -502,14 +566,27 @@ class GoogleSheetsService:
                 await self.initialize()
         return await self.numeric.period_expense_summary(start_date, end_date, level, zero_suppress, include_comments)
 
-    async def month_totals(self, ym: str, include_balances: bool = False) -> Dict[str, float]:
+    async def month_totals(
+            self,
+            ym: str,
+            level: Literal["section", "category", "subcategory"] = "subcategory",
+            zero_suppress: bool = False,
+            include_balances: bool = False,
+    ) -> Dict[str, Any]:
         async with self._init_lock:
             if not self._initialized:
                 await self.initialize()
-        return await self.numeric.month_totals(ym, include_balances)
+        return await self.numeric.month_totals(ym, level=level, zero_suppress=zero_suppress,
+                                               include_balances=include_balances)
 
-    async def months_overview(self) -> Dict[str, Dict[str, float]]:
+    async def months_overview(
+            self,
+            level: Literal["section", "category", "subcategory"] = "subcategory",
+            zero_suppress: bool = False,
+            include_balances: bool = False,
+    ) -> Dict[str, Dict[str, Any]]:
         async with self._init_lock:
             if not self._initialized:
                 await self.initialize()
-        return await self.numeric.months_overview()
+        return await self.numeric.months_overview(level=level, zero_suppress=zero_suppress,
+                                                  include_balances=include_balances)

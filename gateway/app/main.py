@@ -1,4 +1,5 @@
 ﻿# gateway/app/main.py
+import asyncio
 import sys
 import time
 from pathlib import Path
@@ -33,7 +34,7 @@ app.add_middleware(
 
 # Middleware для логирования времени выполнения запросов
 @app.middleware("http")
-async def log_request_time(request: Request, call_next):
+async def log_request_time(request: Request, call_next  ):
     start_time = time.time()
     response = await call_next(request)
     duration = (time.time() - start_time) * 1000  # В миллисекундах
@@ -59,31 +60,31 @@ redis: aioredis.Redis | None = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global redis
-    # Startup
     logger.remove()
-    logger.add(
-        lambda msg: print(msg, end=""),
-        level="INFO",
-        serialize=True
-    )
+    logger.add(lambda msg: print(msg, end=""), level="INFO", serialize=True)
     logger.info("⏱ Gateway starting…")
 
-    redis = aioredis.from_url(
-        REDIS_URL,
-        encoding="utf-8",
-        decode_responses=True
-    )
+    redis = aioredis.from_url(REDIS_URL, encoding="utf-8", decode_responses=True)
     logger.info(f"🔗 Connected to Redis at {REDIS_URL}")
     app.state.redis = redis
 
+    logger.info("Starting application")
+    service = await GoogleSheetsService.get_instance()
+    logger.info("GoogleSheetsService initialized")
+
     yield
 
-    # Shutdown
+    if hasattr(service, '_worker_task') and service._worker_task is not None:
+        service._worker_task.cancel()
+        try:
+            await service._worker_task
+        except asyncio.CancelledError:
+            logger.info("GoogleSheetsService worker task cancelled")
     if redis:
         await redis.close()
         logger.info("🔌 Redis connection closed")
-
+    logger.info("Shutting down application")
 
 app.lifespan = lifespan
 
-app.include_router(operations.router, prefix='/v1')
+app.include_router(operations.router)

@@ -120,24 +120,57 @@ class SheetMeta:
 
         log.info(f"Date row found at index {date_row}")
         row = self.rows[date_row - 1]
+        current_month = None
+        last_day_col = None
+        month_days = {}  # Храним дни для каждого месяца
+        month_end_dates = {
+            "01": 31, "02": 28, "03": 31, "04": 30, "05": 31, "06": 30,
+            "07": 31, "08": 31, "09": 30, "10": 31, "11": 30, "12": 31
+        }
+
+        # Проходим по столбцам, ищем даты
         for col in range(6, len(row)):
             cell = row[col].strip()
             if re.match(r"^\d{2}\.\d{2}\.\d{4}$", cell):
-                self.meta["date_cols"][cell] = col + 1
                 parts = cell.split(".")
                 if len(parts) == 3:
-                    _, mm, yyyy = parts
+                    dd, mm, yyyy = parts
                     ym = f"{yyyy}-{mm.zfill(2)}"
-                    if ym not in self.meta["month_cols"]:
-                        self.meta["month_cols"][ym] = {"balance": col + 1, "free": col + 1}
-            elif "Промежуточные" in cell:
-                ym_match = re.search(r'(\w+\.\d{4})', cell)
-                if ym_match:
-                    mon = ym_match.group(1)
-                    mon_mm, mon_yy = mon.split(".")
-                    ym = f"{mon_yy}-{self._month_to_num(mon_mm)}"
-                    self.meta["month_cols"][ym] = {"balance": col + 1, "free": col + 1}
-        # log.info(f"Date columns: {list(self.meta['date_cols'].keys())}")
+                    self.meta["date_cols"][cell] = col + 1
+                    log.debug(f"Added date {cell} to date_cols at column {col + 1}")
+
+                    # Если месяц сменился, фиксируем итоговый столбец для предыдущего месяца
+                    if current_month != ym:
+                        if current_month and last_day_col:
+                            expected_days = month_end_dates[current_month.split('-')[1]]
+                            last_day = max(month_days[current_month])
+                            if int(last_day) != expected_days:
+                                log.warning(
+                                    f"Последний день месяца {current_month} — {last_day}, ожидалось {expected_days}")
+                            else:
+                                # Следующий столбец после последней даты — итоговый
+                                self.meta["month_cols"][current_month] = {"balance": last_day_col + 2,
+                                                                          "free": last_day_col + 2}
+                                log.info(f"Set month {current_month} with balance column {last_day_col + 2}")
+                        current_month = ym
+                        month_days[ym] = []
+                    month_days[ym].append(dd)
+                    last_day_col = col
+
+        # Фиксируем итоговый столбец для последнего месяца
+        if current_month and last_day_col:
+            expected_days = month_end_dates[current_month.split('-')[1]]
+            last_day = max(month_days[current_month])
+            if int(last_day) != expected_days:
+                log.warning(f"Последний день месяца {current_month} — {last_day}, ожидалось {expected_days}")
+            else:
+                self.meta["month_cols"][current_month] = {"balance": last_day_col + 2, "free": last_day_col + 2}
+                log.info(f"Set final month {current_month} with balance column {last_day_col + 2}")
+
+        # Сортируем month_cols по ключам
+        self.meta["month_cols"] = dict(sorted(self.meta["month_cols"].items()))
+        log.info(f"Date columns: {list(self.meta['date_cols'].keys())}")
+        log.info(f"Month columns: {self.meta['month_cols']}")
         if not self.meta["date_cols"]:
             log.warning("No valid dates found in date row")
             return False
@@ -188,6 +221,10 @@ class SheetMeta:
                 code = self.col_b[j]
                 if patt_section.match(code):
                     break
+                if code.startswith("Итого по всем разделам:"):
+                    self.meta["expenses"]["total_row"] = j + 1
+                    log.info(f"Found 'Итого по всем разделам:' at row {j + 1}")
+                    break
                 if code.startswith("Итого"):
                     section["row_end"] = j + 1
                     section["total_row"] = j + 1
@@ -201,10 +238,21 @@ class SheetMeta:
             expenses[sec_code] = section
             i = j
         self.meta["expenses"] = expenses
-        if expenses and not any("total_row" in sec for sec in expenses.values()):
+        if expenses and "total_row" not in self.meta["expenses"]:
             last_section = max(expenses.values(), key=lambda x: x["row"])
-            self.meta["expenses"]["total_row"] = last_section.get("row_end", last_section["row"] + 1)
+            last_row = last_section.get("row_end", last_section["row"])
+            # Проверяем строки ниже последней секции
+            for k in range(last_row, min(last_row + 3, len(self.col_b))):
+                if self.col_b[k].startswith("Итого по всем разделам:"):
+                    self.meta["expenses"]["total_row"] = k + 1
+                    log.info(f"Found 'Итого по всем разделам:' at row {k + 1} after last section")
+                    break
+            else:
+                self.meta["expenses"]["total_row"] = last_row + 2
+                log.warning(f"'Итого по всем разделам:' not found, setting total_row to {last_row + 2}")
         log.info(f"Expense sections: {list(expenses.keys())}")
+        if "total_row" in self.meta["expenses"]:
+            log.info(f"Total row for expenses: {self.meta['expenses']['total_row']}")
 
     def _scan_creditors(self) -> None:
         codes = self.col_b

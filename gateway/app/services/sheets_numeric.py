@@ -373,19 +373,18 @@ class SheetNumeric:
                                   300, prod)
 
     async def _month_sync(self, ym: str) -> Dict[str, float]:
-        col = self.meta["month_cols"][ym]["balance"]
+        if not self.meta.meta["month_cols"]:
+            raise ValueError("No month columns available in metadata. Please refresh data.")
+        col = self.meta.meta["month_cols"][ym]["balance"]
         bal = self._cell(2, col)
         free = self._cell(3, col)
         inc = sum(
             self._cell(cat["row"], col) +
             sum(self._cell(sub["row"], col) for sub in cat["subs"].values())
-            for cat in self.meta["income"].get("cats", {}).values()
+            for cat in self.meta.meta["income"].get("cats", {}).values()
         )
-        exp = 0.0
-        for sec in self.meta["expenses"].values():
-            for cat in sec["cats"].values():
-                for s in cat["subs"].values():
-                    exp += self._cell(s["row"], col)
+        total_row = self.meta.meta["expenses"].get("total_row", 0)
+        exp = self._cell(total_row, col) if total_row else 0.0
         return {"balance": bal, "free_cash": free, "income": inc, "expense": exp}
 
     async def month_totals(
@@ -394,15 +393,18 @@ class SheetNumeric:
             include_balances: bool = False,
     ) -> Dict[str, float]:
         async def prod():
-            ms = self.meta["month_cols"].get(ym)
+            if not self.meta.meta["month_cols"]:
+                raise ValueError("No month columns available in metadata. Please refresh data.")
+            ms = self.meta.meta["month_cols"].get(ym)
             if not ms:
                 m = await self._month_sync(ym)
                 inc, exp = m["income"], m["expense"]
                 bal, free = m["balance"], m["free_cash"]
             else:
                 col = ms["balance"]
-                inc = self._cell(self.meta["income"].get("total_row", 0), col)
-                exp = self._cell(self.meta["expenses"].get("total_row", 0), col)
+                total_row = self.meta.meta["expenses"].get("total_row", 0)
+                inc = self._cell(self.meta.meta["income"].get("total_row", 0), col)
+                exp = self._cell(total_row, col) if total_row else 0.0
                 bal = self._cell(2, col) if include_balances else None
                 free = self._cell(3, col) if include_balances else None
             d = {"income": inc, "expense": exp}

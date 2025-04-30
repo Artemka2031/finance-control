@@ -13,12 +13,12 @@ from ..core.utils import to_a1, to_float, timeit
 
 
 class SheetNumeric:
-    def __init__(self):
+    def __init__(self, meta: SheetMeta = None):
         log.info("Initializing SheetNumeric")
         self.redis = None
         self.rows = []
         self.notes = {}
-        self.meta = None
+        self.meta = meta
         self.matrix = []
 
     async def _load_cached_raw_data(self) -> tuple[List[List[str]], Dict[str, str]] | None:
@@ -141,12 +141,13 @@ class SheetNumeric:
                 self.matrix.append(row_values)
             await self._save_matrix_to_cache(self.matrix)
 
-        self.meta = SheetMeta()
+        if self.meta is None:
+            raise ValueError("SheetMeta instance must be provided to SheetNumeric")
+        # Синхронизируем rows и notes с SheetMeta
         self.meta.rows = self.rows
         self.meta.notes = self.notes
         self.meta.col_b = [r[1].strip() if len(r) > 1 else "" for r in self.rows]
         self.meta.col_c = [r[2].strip() if len(r) > 2 else "" for r in self.rows]
-        self.meta.meta = await self.meta.build_meta()
         log.debug("SheetNumeric initialize completed")
 
     def _cell(self, row: int, col: int) -> float:
@@ -159,7 +160,11 @@ class SheetNumeric:
     async def _roll(self, col: int, level: Literal["section", "category", "subcategory"], zero_suppress: bool = False,
                     include_comments: bool = False) -> Dict[str, Dict[str, Any]]:
         out: Dict[str, Dict[str, Any]] = {}
+        # Итерируем только по разделам, исключая "total_row"
         for sec_code, sec in self.meta.meta["expenses"].items():
+            # Пропускаем, если sec — не словарь (например, "total_row")
+            if not isinstance(sec, dict):
+                continue
             sec_sum = 0.0
             sec_node = {"name": sec["name"], "amount": 0.0, "cats": {}}
             for cat_code, cat in sec["cats"].items():
@@ -235,7 +240,8 @@ class SheetNumeric:
 
             inc_total, inc_items = await self._process_income_items(col, include_comments, zero_suppress, level)
             exp_tree = await self._roll(col, level, zero_suppress, include_comments)
-            exp_total = sum(s["amount"] for s in exp_tree.values())
+            total_row = self.meta.meta["expenses"].get("total_row", 0)
+            exp_total = self._cell(total_row, col) if total_row else 0.0
             cred_tree = await self._roll_creditors(col, zero_suppress, include_comments)
             cred_total = sum(c["balance"] for c in cred_tree.values())
 
@@ -445,60 +451,117 @@ class SheetNumeric:
         return await self._cached(f"periodsummary:{start_date}:{end_date}:{level}:{zero_suppress}:{include_comments}",
                                   300, prod)
 
-    async def _month_sync(self, ym: str) -> Dict[str, float]:
-        if not self.meta.meta["month_cols"]:
-            raise ValueError("No month columns available in metadata. Please refresh data.")
-        col = self.meta.meta["month_cols"][ym]["balance"]
-        bal = self._cell(2, col)
-        free = self._cell(3, col)
-        inc = sum(
-            self._cell(cat["row"], col) +
-            sum(self._cell(sub["row"], col) for sub in cat["subs"].values())
-            for cat in self.meta.meta["income"].get("cats", {}).values()
-        )
-        exp = 0.0
-        for sec in self.meta.meta["expenses"].values():
-            for cat in sec["cats"].values():
-                for s in cat["subs"].values():
-                    exp += self._cell(s["row"], col)
-        return {"balance": bal, "free_cash": free, "income": inc, "expense": exp}
-
     async def month_totals(
             self,
             ym: str,
+            level: Literal["section", "category", "subcategory"] = "subcategory",
+            zero_suppress: bool = False,
             include_balances: bool = False,
-    ) -> Dict[str, float]:
-        async def prod():
+    ) -> Dict[str, Any]:
+        async def prod() -> Dict[str, Any]:
             if not self.meta.meta["month_cols"]:
                 raise ValueError("No month columns available in metadata. Please refresh data.")
+
             ms = self.meta.meta["month_cols"].get(ym)
             if not ms:
-                m = await self._month_sync(ym)
-                inc, exp = m["income"], m["expense"]
-                bal, free = m["balance"], m["free_cash"]
-            else:
-                col = ms["balance"]
-                inc = self._cell(self.meta.meta["income"].get("total_row", 0), col)
-                exp = self._cell(self.meta.meta["expenses"].get("total_row", 0), col)
-                bal = self._cell(2, col) if include_balances else None
-                free = self._cell(3, col) if include_balances else None
-            d = {"income": inc, "expense": exp}
+                raise ValueError(f"Month {ym} not found in metadata")
+
+            col = ms["balance"]
+
+            # Балансы
+            balance = self._cell(2, col) if include_balances else None
+            free_cash = self._cell(3, col) if include_balances else None
+
+            # Доходы
+            inc_total = self._cell(self.meta.meta["income"].get("total_row", 0), col)
+            inc_items = []
+            for cat_code, cat in self.meta.meta["income"].get("cats", {}).items():
+                v_cat = self._cell(cat["row"], col)
+                if not zero_suppress or v_cat != 0.0:
+                    if level != "section":
+                        inc_items.append({"code": cat_code, "name": cat["name"], "amount": v_cat})
+                for sub_code, sub in cat.get("subs", {}).items():
+                    v_sub = self._cell(sub["row"], col)
+                    if not zero_suppress or v_sub != 0.0:
+                        inc_items.append({"code": sub_code, "name": sub["name"], "amount": v_sub})
+
+            # Расходы
+            exp_tree = {}
+            exp_total = self._cell(self.meta.meta["expenses"].get("total_row", 0), col)
+            for sec_code, sec in self.meta.meta["expenses"].items():
+                if not isinstance(sec, dict):  # Пропускаем "total_row"
+                    continue
+                sec_sum = self._cell(sec.get("total_row", 0), col)
+                sec_node = {"name": sec["name"], "amount": sec_sum, "cats": {}}
+                for cat_code, cat in sec["cats"].items():
+                    cat_sum = self._cell(cat["row"], col)
+                    cat_node = {"name": cat["name"], "amount": cat_sum, "subs": {}}
+                    for sub_code, sub in cat["subs"].items():
+                        val = self._cell(sub["row"], col)
+                        if zero_suppress and val == 0.0:
+                            continue
+                        if level == "subcategory":
+                            cat_node["subs"][sub_code] = {"name": sub["name"], "amount": val}
+                    if zero_suppress and cat_sum == 0.0:
+                        continue
+                    if level in ("category", "subcategory"):
+                        sec_node["cats"][cat_code] = cat_node
+                if zero_suppress and sec_sum == 0.0:
+                    continue
+                if level == "section":
+                    sec_node.pop("cats")
+                exp_tree[sec_code] = sec_node
+
+            # Кредиторы
+            cred_tree = {}
+            cred_total = 0.0
+            for cred_code, cred in self.meta.meta["creditors"].items():
+                balance_val = self._cell(cred["base"] + 4, col)
+                if zero_suppress and balance_val == 0.0:
+                    continue
+                cred_tree[cred_code] = {"name": cred_code, "balance": balance_val}
+                cred_total += balance_val
+
+            result = {
+                "month": ym,
+                "income": {
+                    "total": inc_total,
+                    "items": inc_items
+                },
+                "expense": {
+                    "total": exp_total,
+                    "tree": exp_tree
+                },
+                "creditors": {
+                    "total": cred_total,
+                    "items": cred_tree
+                }
+            }
+
             if include_balances:
-                d.update({"balance": bal, "free_cash": free})
-            return d
+                result["balance"] = balance
+                result["free_cash"] = free_cash
 
-        return await self._cached(f"month:{ym}:{include_balances}", 3600, prod)
+            return result
 
-    async def months_overview(self) -> Dict[str, Dict[str, float]]:
+        return await self._cached(f"month:{ym}:{level}:{zero_suppress}:{include_balances}", 3600, prod)
+
+    async def months_overview(
+            self,
+            level: Literal["section", "category", "subcategory"] = "subcategory",
+            zero_suppress: bool = False,
+            include_balances: bool = False,
+    ) -> Dict[str, Dict[str, Any]]:
         async def prod():
             if not self.meta.meta["month_cols"]:
                 raise ValueError("No month columns available in metadata. Please refresh data.")
             out = {}
             for ym in tqdm(self.meta.meta["month_cols"], desc="Processing months overview"):
-                out[ym] = await self.month_totals(ym)
+                out[ym] = await self.month_totals(ym, level=level, zero_suppress=zero_suppress,
+                                                  include_balances=include_balances)
             return out
 
-        return await self._cached("months:overview:v2", 3600, prod)
+        return await self._cached(f"months:overview:{level}:{zero_suppress}:{include_balances}", 3600, prod)
 
     async def warm_cache(self):
         log.info("Warming up cache")
@@ -510,12 +573,14 @@ class SheetNumeric:
             log.warning("No date columns available for cache warming")
         for ym in tqdm(list(self.meta.meta["month_cols"])[:2], desc="Caching months"):
             log.info("Caching month totals for %s", ym)
-            await self.month_totals(ym)
+            await self.month_totals(ym, level="category", zero_suppress=False, include_balances=False)
 
 
 @timeit("CLI demo")
 async def _demo():
-    sn = SheetNumeric()
+    meta = SheetMeta()
+    await meta.build_meta()
+    sn = SheetNumeric(meta=meta)
     await sn.initialize()
     await sn.warm_cache()
     date = "25.11.2024"

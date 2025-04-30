@@ -97,9 +97,9 @@ class SheetMeta:
             meta["income"] = {"cats": cats, "total_row": root + 1}
 
     # ───────────── РАСХОДЫ (раздел → категории → подкатегории) ─────────────
-    def _scan_expense_tree(self, meta: MetaDoc) -> None:
+    def _scan_expense_tree(self) -> None:
         patt_section = re.compile(r"^Р\d+$")
-        expenses: dict[str, Any] = {}
+        expenses = {}
         i = 0
         log.info("Scanning expense tree")
         while i < len(self.col_b):
@@ -107,37 +107,39 @@ class SheetMeta:
             if not patt_section.match(sec_code):
                 i += 1
                 continue
-            section: dict[str, Any] = {
+            section = {
                 "name": self.col_c[i],
                 "row": i + 1,
                 "cats": {}
             }
             cat_code = ""
             j = i + 1
-            with tqdm(total=len(self.col_b) - j, desc=f"Scanning section {sec_code}") as pbar:
-                while j < len(self.col_b):
-                    code = self.col_b[j]
-                    if patt_section.match(code):
-                        break
-                    if code.startswith("Итого"):
-                        section["row_end"] = j + 1
-                        section["total_row"] = j + 1
-                        j += 1
-                        break
-                    if code and "." not in code:
-                        section["cats"][code] = {"name": self.col_c[j], "row": j + 1, "subs": {}}
-                        cat_code = code
-                    elif cat_code and code.startswith(f"{cat_code}."):
-                        section["cats"][cat_code]["subs"][code] = {"name": self.col_c[j], "row": j + 1}
-                    j += 1
-                    pbar.update(1)
+            while j < len(self.col_b):
+                code = self.col_b[j]
+                if patt_section.match(code):
+                    break
+                if code == "Итого по всем разделам:":
+                    self.meta["expenses"]["total_row"] = j + 1
+                    break
+                if code.startswith("Итого"):
+                    section["row_end"] = j + 1
+                    section["total_row"] = j + 1
+                    break
+                if code and "." not in code:
+                    section["cats"][code] = {"name": self.col_c[j], "row": j + 1, "subs": {}}
+                    cat_code = code
+                elif cat_code and code.startswith(f"{cat_code}."):
+                    section["cats"][cat_code]["subs"][code] = {"name": self.col_c[j], "row": j + 1}
+                j += 1
             expenses[sec_code] = section
             i = j
-        meta["expenses"] = expenses
-        # Если не нашли Итого, используем последнюю строку последнего раздела
-        if expenses and not any("total_row" in sec for sec in expenses.values()):
+        self.meta["expenses"] = expenses
+        if expenses and "total_row" not in self.meta["expenses"]:
             last_section = max(expenses.values(), key=lambda x: x["row"])
-            meta["expenses"]["total_row"] = last_section.get("row_end", last_section["row"] + 1)
+            self.meta["expenses"]["total_row"] = last_section.get("row_end", last_section["row"] + 1)
+        log.info(f"Expense sections: {list(expenses.keys())}")
+        if "total_row" in self.meta["expenses"]:
+            log.info(f"Total row for expenses: {self.meta['expenses']['total_row']}")
 
     # ───────────── КРЕДИТОРЫ ─────────────
     def _scan_creditors(self, meta: MetaDoc) -> None:
