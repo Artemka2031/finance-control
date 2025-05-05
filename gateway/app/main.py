@@ -1,5 +1,4 @@
-﻿# gateway/app/main.py
-import asyncio
+﻿import asyncio
 import sys
 import time
 from pathlib import Path
@@ -7,6 +6,7 @@ from pathlib import Path
 from starlette.middleware.cors import CORSMiddleware
 
 from .services import GoogleSheetsService
+from .services.operations.task_storage import init_db
 
 # Добавляем корневую папку проекта в sys.path
 BASE_DIR = Path(__file__).resolve().parent.parent.parent  # P:\Python\finance-control
@@ -34,7 +34,7 @@ app.add_middleware(
 
 # Middleware для логирования времени выполнения запросов
 @app.middleware("http")
-async def log_request_time(request: Request, call_next  ):
+async def log_request_time(request: Request, call_next):
     start_time = time.time()
     response = await call_next(request)
     duration = (time.time() - start_time) * 1000  # В миллисекундах
@@ -46,6 +46,7 @@ async def log_request_time(request: Request, call_next  ):
 @app.on_event("startup")
 async def startup_event():
     log.info("Application starting up")
+    init_db()
     service = GoogleSheetsService()
     await service.initialize()
     log.info("GoogleSheetsService initialized on startup")
@@ -55,7 +56,6 @@ Instrumentator().instrument(app).expose(app, include_in_schema=False, endpoint="
 
 # Настройка Redis
 redis: aioredis.Redis | None = None
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -87,4 +87,16 @@ async def lifespan(app: FastAPI):
 
 app.lifespan = lifespan
 
-app.include_router(operations.router)
+# Отладочный вывод для проверки роутеров
+try:
+    logger.info(f"Routes before including router: {app.routes}")
+    app.include_router(operations.router)
+    logger.info(f"Routes after including router: {app.routes}")
+except Exception as e:
+    logger.error(f"Failed to include router: {str(e)}")
+    raise
+
+# Добавим тестовую конечную точку для проверки
+@app.get("/health", tags=["Health"])
+async def health_check():
+    return {"status": "ok"}

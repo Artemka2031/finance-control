@@ -151,11 +151,23 @@ class SheetNumeric:
         log.debug("SheetNumeric initialize completed")
 
     def _cell(self, row: int, col: int) -> float:
-        try:
-            return self.matrix[row - 1][col - 1]
-        except IndexError:
-            log.debug(f"Cell ({row}, {col}) out of bounds")
+        """Возвращает числовое значение ячейки, а не формулу."""
+        raw_value = self.matrix.get((row, col), "")
+        if not raw_value:
             return 0.0
+        if raw_value.startswith("="):
+            # Извлекаем значения из формулы и вычисляем сумму
+            formula = raw_value.lstrip("=")
+            parts = formula.split("+")
+            total = 0.0
+            for part in parts:
+                part = part.strip()
+                try:
+                    total += float(part.replace(",", "."))
+                except ValueError:
+                    continue
+            return total
+        return to_float(raw_value)
 
     async def _roll(self, col: int, level: Literal["section", "category", "subcategory"], zero_suppress: bool = False,
                     include_comments: bool = False) -> Dict[str, Dict[str, Any]]:

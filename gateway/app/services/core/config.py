@@ -1,5 +1,6 @@
 # gateway/app/services/core/config.py
 import json
+import os
 import re
 from pathlib import Path
 from typing import Dict, Optional
@@ -86,7 +87,7 @@ GOOGLE_CREDENTIALS = config.google_credentials.model_dump(by_alias=True)
 logger.remove()  # Удаляем все существующие обработчики
 logger.add(
     lambda msg: print(msg, end=""),
-    level="INFO",
+    level="DEBUG",
     format=(
         "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
         "<b>{level:<8}</b> | "
