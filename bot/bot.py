@@ -1,3 +1,4 @@
+# Bot/bot.py
 import asyncio
 from aiogram import Bot, Dispatcher
 from .config import BOT_TOKEN
@@ -6,29 +7,39 @@ from .commands import create_start_router
 from .middleware.error_handling import ErrorHandlingMiddleware
 from .middleware.logging import LoggingMiddleware
 from .routers.expenses.expenses_router import create_expenses_router
+# from .routers.income.income_router import create_income_router
+from .utils.logging import configure_logger
+
+# Configure bot logger
+logger = configure_logger("[BOT]", "green")
 
 async def main():
     # Initialize bot and dispatcher
+    logger.info("Initializing bot and dispatcher")
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
     api_client = ApiClient()
 
     # Setup middleware
+    logger.debug("Registering middleware")
     dp.update.middleware(ErrorHandlingMiddleware())
     dp.update.middleware(LoggingMiddleware())
 
     # Register routers
+    logger.debug("Registering routers")
     dp.include_router(create_start_router())
     dp.include_router(create_expenses_router(bot, api_client))
+    # dp.include_router(create_income_router(bot, api_client))
 
     # Start polling
     try:
-        print("Bot is starting...")
+        logger.info("Bot is starting...")
         await dp.start_polling(bot)
     finally:
-        print("Bot is shutting down...")
+        logger.info("Bot is shutting down...")
         await api_client.close()
         await bot.session.close()
 
 if __name__ == "__main__":
+    logger.info("Starting bot application")
     asyncio.run(main())

@@ -1,27 +1,31 @@
-from aiogram import Router, F
+# Bot/routers/expenses/wallet_router.py
+from aiogram import Router, F, Bot
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
-from bot.keyboards.wallet import create_wallet_keyboard
-from bot.keyboards.utils import ChooseWalletCallback, ChooseCreditorCallback
-from bot.keyboards.category import create_section_keyboard
-from bot.routers.expenses.state_classes import Expense
-from bot.utils.message_utils import delete_messages_after, track_message
-from bot.api_client import ApiClient
+
+from ..expenses.state_classes import Expense
+from ...api_client import ApiClient
+from ...keyboards.category import create_section_keyboard
+from ...keyboards.utils import ChooseWalletCallback, ChooseCreditorCallback
+from ...keyboards.wallet import create_wallet_keyboard
+from ...utils.message_utils import delete_messages_after, track_message
 
 
-def create_wallet_router(bot, api_client: ApiClient):
+def create_wallet_router(bot: Bot, api_client: ApiClient):
     wallet_router = Router()
 
     @wallet_router.callback_query(Expense.wallet, ChooseWalletCallback.filter())
     @delete_messages_after
     @track_message
-    async def choose_wallet(query: CallbackQuery, callback_data: ChooseWalletCallback, state: FSMContext) -> Message:
+    async def choose_wallet(query: CallbackQuery, callback_data: ChooseWalletCallback, state: FSMContext,
+                            bot: Bot) -> Message:
         wallet = callback_data.wallet
         await state.update_data(wallet=wallet)
         await query.message.edit_text(f"Выбран кошелек: {wallet}", reply_markup=None)
 
         if wallet in ["project", "dividends"]:
-            section_message = await query.message.answer(
+            section_message = await bot.send_message(
+                chat_id=query.message.chat.id,
                 text="Выберите раздел:",
                 reply_markup=await create_section_keyboard(api_client)
             )
@@ -34,7 +38,11 @@ def create_wallet_router(bot, api_client: ApiClient):
             back_callback = ChooseCreditorCallback(creditor="back", back=True)
             kb = api_client.build_inline_keyboard(items, adjust=1, back_button=True, back_callback=back_callback)
 
-            creditor_message = await query.message.answer("Выберите кредитора:", reply_markup=kb)
+            creditor_message = await bot.send_message(
+                chat_id=query.message.chat.id,
+                text="Выберите кредитора:",
+                reply_markup=kb
+            )
             await state.set_state(Expense.creditor_borrow)
             return creditor_message
         elif wallet == "repay":
@@ -44,15 +52,20 @@ def create_wallet_router(bot, api_client: ApiClient):
             back_callback = ChooseCreditorCallback(creditor="back", back=True)
             kb = api_client.build_inline_keyboard(items, adjust=1, back_button=True, back_callback=back_callback)
 
-            creditor_message = await query.message.answer("Выберите кредитора для возврата долга:", reply_markup=kb)
+            creditor_message = await bot.send_message(
+                chat_id=query.message.chat.id,
+                text="Выберите кредитора для возврата долга:",
+                reply_markup=kb
+            )
             await state.set_state(Expense.creditor_return)
             return creditor_message
 
     @wallet_router.callback_query(ChooseCreditorCallback.filter(F.back == True))
     @delete_messages_after
     @track_message
-    async def back_to_wallet_selection(query: CallbackQuery, state: FSMContext) -> Message:
-        wallet_message = await query.message.answer(
+    async def back_to_wallet_selection(query: CallbackQuery, state: FSMContext, bot: Bot) -> Message:
+        wallet_message = await bot.send_message(
+            chat_id=query.message.chat.id,
             text="Выберите кошелек:",
             reply_markup=create_wallet_keyboard()
         )
@@ -62,13 +75,14 @@ def create_wallet_router(bot, api_client: ApiClient):
     @wallet_router.callback_query(Expense.creditor_borrow, ChooseCreditorCallback.filter(F.back == False))
     @delete_messages_after
     @track_message
-    async def choose_creditor(query: CallbackQuery, callback_data: ChooseCreditorCallback,
-                              state: FSMContext) -> Message:
+    async def choose_creditor(query: CallbackQuery, callback_data: ChooseCreditorCallback, state: FSMContext,
+                              bot: Bot) -> Message:
         creditor = callback_data.creditor
         await state.update_data(creditor=creditor)
         await query.message.edit_text(f"Выбран кредитор: {creditor}", reply_markup=None)
 
-        section_message = await query.message.answer(
+        section_message = await bot.send_message(
+            chat_id=query.message.chat.id,
             text=f"Выбран кредитор: {creditor}. \nВыберите раздел:",
             reply_markup=await create_section_keyboard(api_client)
         )
@@ -79,12 +93,15 @@ def create_wallet_router(bot, api_client: ApiClient):
     @delete_messages_after
     @track_message
     async def choose_creditor_for_return_debt(query: CallbackQuery, callback_data: ChooseCreditorCallback,
-                                              state: FSMContext) -> Message:
+                                              state: FSMContext, bot: Bot) -> Message:
         creditor = callback_data.creditor
         await state.update_data(creditor=creditor)
         await query.message.edit_text(f"Возврат долга: {creditor}", reply_markup=None)
 
-        amount_message = await query.message.answer(text="Введите сумму возврата:")
+        amount_message = await bot.send_message(
+            chat_id=query.message.chat.id,
+            text="Введите сумму возврата:"
+        )
         await state.set_state(Expense.amount)
         return amount_message
 

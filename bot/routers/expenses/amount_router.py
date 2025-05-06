@@ -2,12 +2,10 @@
 from aiogram import Router, Bot
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
-
-from bot.api_client import ApiClient
-from bot.filters.check_amount import CheckAmountFilter
-from bot.routers.expenses.state_classes import Expense
-from bot.utils.message_utils import delete_messages_after, track_message
-
+from ..expenses.state_classes import Expense
+from ...api_client import ApiClient
+from ...filters.check_amount import CheckAmountFilter
+from ...utils.message_utils import delete_messages_after, track_message
 
 def create_amount_router(bot: Bot, api_client: ApiClient):
     amount_router = Router()

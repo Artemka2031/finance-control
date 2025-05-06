@@ -1,8 +1,10 @@
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.utils.keyboard import InlineKeyboardBuilder
+# Bot/keyboards/start_kb.py
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.utils.keyboard import ReplyKeyboardBuilder
 
-def create_start_kb() -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    builder.add(InlineKeyboardButton(text="Расход ₽", callback_data="add_expense"))
-    builder.adjust(1)
-    return builder.as_markup()
+def create_start_kb() -> ReplyKeyboardMarkup:
+    builder = ReplyKeyboardBuilder()
+    builder.add(KeyboardButton(text="Расход ₽"))
+    builder.add(KeyboardButton(text="Приход ₽"))
+    builder.adjust(2)  # Two buttons per row
+    return builder.as_markup(resize_keyboard=True)
