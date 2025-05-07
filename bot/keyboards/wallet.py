@@ -1,12 +1,23 @@
 # Bot/keyboards/wallet.py
-from aiogram.types import InlineKeyboardMarkup
-from bot.keyboards.utils import build_inline_keyboard, ChooseWalletCallback
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from .utils import ChooseWalletCallback
 
 def create_wallet_keyboard() -> InlineKeyboardMarkup:
+    """
+    Создаёт клавиатуру для выбора кошелька.
+    """
+    builder = InlineKeyboardBuilder()
     wallets = [
-        ("Проект", "project", ChooseWalletCallback(wallet="project")),
-        ("Взять в долг", "borrow", ChooseWalletCallback(wallet="borrow")),
-        ("Вернуть долг", "repay", ChooseWalletCallback(wallet="repay")),
-        ("Дивиденды", "dividends", ChooseWalletCallback(wallet="dividends"))
+        ("Проект", "project"),
+        ("Взять в долг", "borrow"),
+        ("Вернуть долг", "repay"),
+        ("Дивиденды", "dividends")
     ]
-    return build_inline_keyboard(wallets, adjust=2)
+    for text, wallet in wallets:
+        builder.add(InlineKeyboardButton(
+            text=text,
+            callback_data=ChooseWalletCallback(wallet=wallet).pack()
+        ))
+    builder.adjust(2)  # Две кнопки в ряду
+    return builder.as_markup()

@@ -1,12 +1,12 @@
-﻿from typing import Dict, Literal, Any, List
+﻿from functools import wraps
+from typing import Dict, Literal, Any, List
 
 from fastapi import APIRouter, Request, HTTPException, Depends
-from functools import wraps
 
-from ..services.core import log
-from ..services.operations import GoogleSheetsService
 from .dependencies import get_sheets_service
 from .models import CodeName, AckOut, ExpenseIn, IncomeIn, CreditorIn
+from ..services.core import log
+from ..services.operations import GoogleSheetsService
 
 # Основной роутер
 router = APIRouter()
@@ -21,7 +21,6 @@ operations_router = APIRouter(prefix="/operations", tags=["Operations"])
 expense_router = APIRouter(prefix="/expense")
 income_router = APIRouter(prefix="/income")
 creditor_router = APIRouter(prefix="/creditor")
-
 
 # Декоратор для постановки задач в очередь
 def async_task_queue(task_type: str):
@@ -41,14 +40,27 @@ def async_task_queue(task_type: str):
 
             user_id = request.headers.get("X-User-ID", "unknown") if request else "unknown"
 
-            # Ставим задачу в очередь
-            task_id = await service.task_manager.queue_task(task_type, payload, user_id)
-            return AckOut(ok=True, task_id=task_id)
+            try:
+                # Проверяем статус задачи для операций удаления
+                if task_type.startswith("remove_"):
+                    task_id = payload.get("task_id")
+                    if not task_id:
+                        return AckOut(ok=False, detail=[{"type": "invalid_input", "msg": "task_id is required"}])
+                    try:
+                        await service.task_manager.get_task_status(task_id)
+                    except ValueError as e:
+                        return AckOut(ok=False, detail=[{"type": "not_found", "msg": f"Task {task_id} not found"}])
+
+                # Ставим задачу в очередь
+                task_id = await service.task_manager.queue_task(task_type, payload, user_id)
+                return AckOut(ok=True, task_id=task_id)
+            except Exception as e:
+                log.error(f"Failed to queue task {task_type}: {str(e)}")
+                return AckOut(ok=False, detail=[{"type": "server_error", "msg": str(e)}])
 
         return wrapper
 
     return decorator
-
 
 # --- Служебные ручки ---
 @service_router.post("/refresh", summary="Refresh cache and data")
@@ -58,8 +70,8 @@ async def refresh_data(service: GoogleSheetsService = Depends(get_sheets_service
         await service.refresh_cache()
         return {"status": "success", "message": "Cache and data refreshed"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to refresh cache: {str(e)}")
-
+        raise HTTPException(status_code=500,
+                            detail=[{"type": "server_error", "msg": f"Failed to refresh cache: {str(e)}"}])
 
 @service_router.get("/meta", response_model=Dict, summary="Get full metadata")
 async def get_metadata(service: GoogleSheetsService = Depends(get_sheets_service)):
@@ -71,8 +83,8 @@ async def get_metadata(service: GoogleSheetsService = Depends(get_sheets_service
         return meta
     except Exception as e:
         log.error(f"Failed to fetch metadata: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch metadata: {str(e)}")
-
+        raise HTTPException(status_code=500,
+                            detail=[{"type": "server_error", "msg": f"Failed to fetch metadata: {str(e)}"}])
 
 # --- Ручки для клавиатур ---
 @keyboard_router.get(
@@ -91,8 +103,8 @@ async def get_incomes(service: GoogleSheetsService = Depends(get_sheets_service)
         return incomes
     except Exception as e:
         log.error(f"Failed to fetch incomes: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch incomes: {str(e)}")
-
+        raise HTTPException(status_code=500,
+                            detail=[{"type": "server_error", "msg": f"Failed to fetch incomes: {str(e)}"}])
 
 @keyboard_router.get(
     "/sections",
@@ -111,8 +123,8 @@ async def get_sections(service: GoogleSheetsService = Depends(get_sheets_service
         return sections
     except Exception as e:
         log.error(f"Failed to fetch sections: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch sections: {str(e)}")
-
+        raise HTTPException(status_code=500,
+                            detail=[{"type": "server_error", "msg": f"Failed to fetch sections: {str(e)}"}])
 
 @keyboard_router.get(
     "/categories/{sec_code}",
@@ -127,7 +139,7 @@ async def get_categories(
     try:
         section = service.meta.meta["expenses"].get(sec_code)
         if not section:
-            raise HTTPException(status_code=404, detail=f"Section {sec_code} not found")
+            raise HTTPException(status_code=404, detail=[{"type": "not_found", "msg": f"Section {sec_code} not found"}])
         categories = [
             {"code": cat_code, "name": cat["name"]}
             for cat_code, cat in section.get("cats", {}).items()
@@ -138,8 +150,8 @@ async def get_categories(
         raise
     except Exception as e:
         log.error(f"Failed to fetch categories for section {sec_code}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch categories: {str(e)}")
-
+        raise HTTPException(status_code=500,
+                            detail=[{"type": "server_error", "msg": f"Failed to fetch categories: {str(e)}"}])
 
 @keyboard_router.get(
     "/subcategories/{sec_code}/{cat_code}",
@@ -155,10 +167,11 @@ async def get_subcategories(
     try:
         section = service.meta.meta["expenses"].get(sec_code)
         if not section:
-            raise HTTPException(status_code=404, detail=f"Section {sec_code} not found")
+            raise HTTPException(status_code=404, detail=[{"type": "not_found", "msg": f"Section {sec_code} not found"}])
         category = section.get("cats", {}).get(cat_code)
         if not category:
-            raise HTTPException(status_code=404, detail=f"Category {cat_code} not found")
+            raise HTTPException(status_code=404,
+                                detail=[{"type": "not_found", "msg": f"Category {cat_code} not found"}])
         subcategories = [
             {"code": sub_code, "name": sub["name"]}
             for sub_code, sub in category.get("subs", {}).items()
@@ -169,8 +182,8 @@ async def get_subcategories(
         raise
     except Exception as e:
         log.error(f"Failed to fetch subcategories for {sec_code}/{cat_code}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch subcategories: {str(e)}")
-
+        raise HTTPException(status_code=500,
+                            detail=[{"type": "server_error", "msg": f"Failed to fetch subcategories: {str(e)}"}])
 
 @keyboard_router.get(
     "/creditors",
@@ -188,8 +201,8 @@ async def get_creditors(service: GoogleSheetsService = Depends(get_sheets_servic
         return creditors
     except Exception as e:
         log.error(f"Failed to fetch creditors: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch creditors: {str(e)}")
-
+        raise HTTPException(status_code=500,
+                            detail=[{"type": "server_error", "msg": f"Failed to fetch creditors: {str(e)}"}])
 
 # --- Ручки аналитики ---
 @analytics_router.get(
@@ -208,8 +221,7 @@ async def day_breakdown(
     try:
         return await service.day_breakdown(date, level, zero_suppress, include_month_summary, include_comments)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
+        raise HTTPException(status_code=400, detail=[{"type": "invalid_input", "msg": str(e)}])
 
 @analytics_router.get(
     "/month/{ym}",
@@ -224,8 +236,7 @@ async def get_month_summary(
     try:
         return await service.get_month_summary(ym, include_comments)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
+        raise HTTPException(status_code=400, detail=[{"type": "invalid_input", "msg": str(e)}])
 
 @analytics_router.get(
     "/period/{start_date}/{end_date}",
@@ -243,8 +254,7 @@ async def period_expense_summary(
     try:
         return await service.period_expense_summary(start_date, end_date, level, zero_suppress, include_comments)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
+        raise HTTPException(status_code=400, detail=[{"type": "invalid_input", "msg": str(e)}])
 
 @analytics_router.get(
     "/month_totals/{ym}",
@@ -263,8 +273,7 @@ async def month_totals(
         return await service.month_totals(ym, level=level, zero_suppress=zero_suppress,
                                           include_balances=include_balances)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
+        raise HTTPException(status_code=400, detail=[{"type": "invalid_input", "msg": str(e)}])
 
 @analytics_router.get(
     "/months_overview",
@@ -280,7 +289,6 @@ async def months_overview(
     """Retrieve a detailed financial overview for all months, including income, expenses, creditors, and balances."""
     return await service.months_overview(level=level, zero_suppress=zero_suppress, include_balances=include_balances)
 
-
 # --- Ручки операций ---
 @operations_router.get("/task/{task_id}", response_model=Dict, summary="Get task status")
 async def get_task_status(
@@ -291,8 +299,7 @@ async def get_task_status(
     try:
         return await service.task_manager.get_task_status(task_id)
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-
+        raise HTTPException(status_code=404, detail=[{"type": "not_found", "msg": str(e)}])
 
 # --- Определение ручек для операций ---
 @expense_router.post("/", response_model=AckOut, summary="Add an expense")
@@ -305,7 +312,6 @@ async def add_expense(
     """Queue a task to add a new expense to the Google Sheet."""
     pass
 
-
 @expense_router.post("/remove", response_model=AckOut, summary="Remove an expense")
 @async_task_queue("remove_expense")
 async def remove_expense(
@@ -315,9 +321,8 @@ async def remove_expense(
 ):
     """Queue a task to remove an expense using the original task_id."""
     if not task_id:
-        raise HTTPException(status_code=400, detail="task_id is required")
+        return AckOut(ok=False, detail=[{"type": "invalid_input", "msg": "task_id is required"}])
     return await async_task_queue("remove_expense")(lambda: None)(task_id, request, service)
-
 
 @income_router.post("/", response_model=AckOut, summary="Add an income")
 @async_task_queue("add_income")
@@ -329,7 +334,6 @@ async def add_income(
     """Queue a task to add a new income to the Google Sheet."""
     pass
 
-
 @income_router.post("/remove", response_model=AckOut, summary="Remove an income")
 @async_task_queue("remove_income")
 async def remove_income(
@@ -339,9 +343,8 @@ async def remove_income(
 ):
     """Queue a task to remove an income using the original task_id."""
     if not task_id:
-        raise HTTPException(status_code=400, detail="task_id is required")
+        return AckOut(ok=False, detail=[{"type": "invalid_input", "msg": "task_id is required"}])
     return await async_task_queue("remove_income")(lambda: None)(task_id, request, service)
-
 
 @creditor_router.post("/borrow", response_model=AckOut, summary="Record a borrowing")
 @async_task_queue("record_borrowing")
@@ -353,7 +356,6 @@ async def record_borrowing(
     """Queue a task to record a borrowing in the Google Sheet."""
     pass
 
-
 @creditor_router.post("/borrow/remove", response_model=AckOut, summary="Remove a borrowing")
 @async_task_queue("remove_borrowing")
 async def remove_borrowing(
@@ -363,9 +365,8 @@ async def remove_borrowing(
 ):
     """Queue a task to remove a borrowing using the original task_id."""
     if not task_id:
-        raise HTTPException(status_code=400, detail="task_id is required")
+        return AckOut(ok=False, detail=[{"type": "invalid_input", "msg": "task_id is required"}])
     return await async_task_queue("remove_borrowing")(lambda: None)(task_id, request, service)
-
 
 @creditor_router.post("/repay", response_model=AckOut, summary="Record a repayment")
 @async_task_queue("record_repayment")
@@ -377,7 +378,6 @@ async def record_repayment(
     """Queue a task to record a repayment in the Google Sheet."""
     pass
 
-
 @creditor_router.post("/repay/remove", response_model=AckOut, summary="Remove a repayment")
 @async_task_queue("remove_repayment")
 async def remove_repayment(
@@ -387,9 +387,8 @@ async def remove_repayment(
 ):
     """Queue a task to remove a repayment using the original task_id."""
     if not task_id:
-        raise HTTPException(status_code=400, detail="task_id is required")
+        return AckOut(ok=False, detail=[{"type": "invalid_input", "msg": "task_id is required"}])
     return await async_task_queue("remove_repayment")(lambda: None)(task_id, request, service)
-
 
 @creditor_router.post("/save", response_model=AckOut, summary="Record a saving")
 @async_task_queue("record_saving")
@@ -401,7 +400,6 @@ async def record_saving(
     """Queue a task to record a saving in the Google Sheet."""
     pass
 
-
 @creditor_router.post("/save/remove", response_model=AckOut, summary="Remove a saving")
 @async_task_queue("remove_saving")
 async def remove_saving(
@@ -411,9 +409,8 @@ async def remove_saving(
 ):
     """Queue a task to remove a saving using the original task_id."""
     if not task_id:
-        raise HTTPException(status_code=400, detail="task_id is required")
+        return AckOut(ok=False, detail=[{"type": "invalid_input", "msg": "task_id is required"}])
     return await async_task_queue("remove_saving")(lambda: None)(task_id, request, service)
-
 
 # Подключение роутеров для операций к operations_router
 operations_router.include_router(expense_router)

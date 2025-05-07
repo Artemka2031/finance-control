@@ -1,4 +1,3 @@
-# Bot/keyboards/category.py
 from aiogram.types import InlineKeyboardMarkup
 
 from bot.api_client import ApiClient
@@ -12,7 +11,6 @@ async def create_section_keyboard(api_client: ApiClient) -> InlineKeyboardMarkup
              sections]
     return build_inline_keyboard(items, adjust=1, back_button=True,
                                  back_callback=ChooseSectionCallback(section_code="back", back=True))
-
 
 async def create_category_keyboard(api_client: ApiClient, section_code: str) -> InlineKeyboardMarkup:
     categories = await api_client.get_categories(section_code)

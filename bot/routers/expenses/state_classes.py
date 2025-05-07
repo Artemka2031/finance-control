@@ -1,4 +1,3 @@
-# Bot/routers/expenses/state_classes.py
 from aiogram.fsm.state import State, StatesGroup
 
 class Expense(StatesGroup):
@@ -12,6 +11,5 @@ class Expense(StatesGroup):
     comment = State()
     creditor_borrow = State()
     creditor_return = State()
-    creditor = State()
-    messages_to_delete = State()
     delete_expense = State()
+    confirm = State()

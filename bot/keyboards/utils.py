@@ -1,86 +1,73 @@
-# Bot/keyboards/utils.py
 from typing import List, Tuple, Optional
 
 from aiogram.filters.callback_data import CallbackData
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 
-# Callback data classes
+class TodayCallback(CallbackData, prefix="today"):
+    today: str
+
 class ChooseWalletCallback(CallbackData, prefix="CWC"):
     wallet: str
 
 
-class ChooseCreditorCallback(CallbackData, prefix="CCrC"):
-    creditor: str
-    back: bool
-
-
-class DeleteOperationCallback(CallbackData, prefix="DelE"):
-    operation_id: str
-    delete: bool
-
-
-class ConfirmDeleteOperationCallback(CallbackData, prefix="ConfDE"):
-    operation_id: str
-    confirm_delete: bool
-
-
-class DeleteComingCallback(CallbackData, prefix="DelC"):
-    operation_id: str
-    delete: bool
-
-
-class ConfirmDeleteComingCallback(CallbackData, prefix="ConfDC"):
-    operation_id: str
-    confirm_delete: bool
-
-
-class TodayCallback(CallbackData, prefix="TDC"):
-    today: str
-
-
-class ChooseSectionCallback(CallbackData, prefix="CSecC"):
+class ChooseSectionCallback(CallbackData, prefix="CSC"):
     section_code: str
     back: bool
 
 
-class ChooseCategoryCallback(CallbackData, prefix="CCatC"):
+class ChooseCategoryCallback(CallbackData, prefix="CC"):
     category_code: str
     back: bool
 
 
-class ChooseSubCategoryCallback(CallbackData, prefix="CSubCatC"):
+class ChooseSubCategoryCallback(CallbackData, prefix="CS"):
     subcategory_code: str
     back: bool
 
 
+class ChooseCreditorCallback(CallbackData, prefix="CCR"):
+    creditor: str
+    back: bool
+
+
+class DeleteOperationCallback(CallbackData, prefix="delete_op"):
+    task_ids: str
+    delete: bool
+
+class ConfirmDeleteOperationCallback(CallbackData, prefix="confirm_delete_op"):
+    task_ids: str
+    confirm_delete: bool
+
+class DeleteComingCallback(CallbackData, prefix="delete_coming"):
+    task_ids: str
+    delete: bool
+
+class ConfirmDeleteComingCallback(CallbackData, prefix="confirm_delete_coming"):
+    task_ids: str
+    confirm_delete: bool
+
+class ConfirmOperationCallback(CallbackData, prefix="confirm_op"):
+    confirm: bool
+
 def build_inline_keyboard(
-        items: List[Tuple[str, str, Optional[CallbackData]]],
+        items: List[Tuple[str, str, CallbackData]],
         adjust: int = 1,
         back_button: bool = False,
         back_callback: Optional[CallbackData] = None
 ) -> InlineKeyboardMarkup:
-    """
-    Generic function to build inline keyboards.
-
-    Args:
-        items: List of tuples (text, identifier, callback_data).
-        adjust: Number of buttons per row.
-        back_button: Whether to add a back button.
-        back_callback: Callback data for the back button.
-
-    Returns:
-        InlineKeyboardMarkup: The constructed keyboard.
-    """
-    builder = InlineKeyboardBuilder()
-
-    for text, identifier, callback in items:
-        if callback:
-            builder.add(InlineKeyboardButton(text=text, callback_data=callback.pack()))
+    buttons = []
+    for text, callback_id, callback in items:
+        buttons.append([InlineKeyboardButton(text=text, callback_data=callback.pack())])
 
     if back_button and back_callback:
-        builder.add(InlineKeyboardButton(text="<< Назад", callback_data=back_callback.pack()))
+        buttons.append([InlineKeyboardButton(text="Назад", callback_data=back_callback.pack())])
 
-    builder.adjust(adjust)
-    return builder.as_markup()
+    # Adjust buttons per row if needed
+    if adjust > 1:
+        adjusted_buttons = []
+        for i in range(0, len(buttons), adjust):
+            adjusted_buttons.append([btn for row in buttons[i:i + adjust] for btn in row])
+        buttons = adjusted_buttons
+
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
