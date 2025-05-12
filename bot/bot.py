@@ -4,8 +4,8 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
-from bot.comands import set_bot_commands
-from bot.routers.start_router import create_start_router
+from .comands import set_bot_commands
+from .routers.start_router import create_start_router
 from .api_client import ApiClient
 from .config import BOT_TOKEN
 from .middleware.error_handling import ErrorHandlingMiddleware

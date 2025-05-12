@@ -11,6 +11,7 @@ from .date_router import create_date_router
 from .delete_router import create_delete_router
 from .state_classes import Expense
 from .wallet_router import create_wallet_router
+from ...agent.router import create_agent_router
 from ...api_client import ApiClient
 from ...keyboards.today import create_today_keyboard
 from ...utils.logging import configure_logger
@@ -71,5 +72,6 @@ def create_expenses_router(bot: Bot, api_client: ApiClient):
     expenses_router.include_router(create_comment_router(bot, api_client))
     expenses_router.include_router(create_confirm_router(bot, api_client))
     expenses_router.include_router(create_delete_router(bot, api_client))
+    expenses_router.include_router(create_agent_router(bot, api_client))
 
     return expenses_router
