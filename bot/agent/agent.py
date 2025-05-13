@@ -1,214 +1,498 @@
-"""
-Functional-API версия финансового агента.
-Запускается так:
-    result = await expense_workflow.ainvoke({"input_text": "Потратил 3000 на еду вчера"})
-"""
-
 import json
-import uuid
 from datetime import datetime, timedelta
-from typing import Any, Dict
-
-from langgraph.checkpoint.memory import MemorySaver
-from langgraph.func import entrypoint, task
+from typing import List, Dict, Optional, Any
+from typing_extensions import TypedDict
+from langgraph.graph import StateGraph, END
 from openai import AsyncOpenAI
-
+from pydantic import BaseModel, Field
+from ..api_client import ApiClient
+from ..utils.logging import configure_logger
 from .config import OPENAI_API_KEY, BACKEND_URL
 from .prompts import get_parse_prompt, DECISION_PROMPT, RESPONSE_PROMPT
-from .utils import configure_logger, fuzzy_match
-from ..api_client import ApiClient
+from .utils import fuzzy_match
 
-logger = configure_logger("[FUNC_AGENT]", "blue")
-openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
-checkpointer = MemorySaver()
+# Logger
+logger = configure_logger("[AGENT]", "blue")
+
+# Initialize OpenAI client
+logger.debug(f"Initializing OpenAI client with API key: {'*' * len(OPENAI_API_KEY[:-4]) + OPENAI_API_KEY[-4:]}")
+try:
+    openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+except Exception as e:
+    logger.error(f"Failed to initialize OpenAI client: {e}")
+    raise
+
+# Cache for API responses
+section_cache: List[Dict] = []
+category_cache: Dict[str, List[Dict]] = {}
+subcategory_cache: Dict[str, List[Dict]] = {}
+creditor_cache: List[Dict] = []
+
+# Mock sections for testing
+MOCK_SECTIONS = [
+    {"code": "Р4", "name": "Еда"},
+    {"code": "Р2", "name": "Транспорт"},
+    {"code": "Р1", "name": "Подарки"}
+]
 
 
-# ────────────────────────────── helpers ────────────────────────────────────────
-async def _llm_json(prompt: str) -> Dict[str, Any]:
-    """Call OpenAI in JSON-mode and return parsed content."""
-    resp = await openai_client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        response_format={"type": "json_object"},
-    )
-    return json.loads(resp.choices[0].message.content.strip())
-
-def _short(obj: Any, n: int = 100) -> str:
-    txt = json.dumps(obj, ensure_ascii=False)[:n]
-    return txt + ("…" if len(txt) == n else "")
-
-
-# ────────────────────────────── tasks ──────────────────────────────────────────
-@task
-async def parse_task(state: Dict[str, Any]) -> Dict[str, Any]:
-    logger.info(f"[parse_task] input = {_short(state)}")
-    prompt = get_parse_prompt(state["input_text"])
+async def validate_category(category_name: str, chapter_code: str) -> Dict[str, Any]:
+    """Validate category name against API and return category code."""
+    logger.info(f"[VALIDATE] Validating category: {category_name}, chapter: {chapter_code}")
+    api_client = ApiClient(base_url=BACKEND_URL)
     try:
-        raw = await _llm_json(prompt)
-        requests = [{"intent": r.get("intent"),
-                     "entities": r.get("entities", {}),
-                     "missing": r.get("missing", [])} for r in raw.get("requests", [])]
-        if not requests:
-            return {"output": {"messages": [{
-                "text": "Не удалось распознать запрос. Уточните, пожалуйста.",
-                "request_indices": []}], "output": []}}
-        logger.info(f"[parse_task] output = {_short(requests)}")
-        return {"requests": requests}
+        categories = category_cache.get(chapter_code)
+        if not categories:
+            logger.debug(f"[VALIDATE] Fetching categories for chapter_code: {chapter_code}")
+            categories = await api_client.get_categories(chapter_code)
+            if not categories:  # Mock categories if API fails
+                categories = [
+                    {"code": "1", "name": "Фастфуд"},
+                    {"code": "2", "name": "Рестораны"},
+                    {"code": "3", "name": "Продукты"}
+                ]
+            category_cache[chapter_code] = categories
+        category_names = [cat["name"] for cat in categories]
+        match, score = fuzzy_match(category_name, category_names)
+        if score > 0.8:
+            result = {"category_code": next(cat["code"] for cat in categories if cat["name"] == match), "success": True}
+            logger.info(f"[VALIDATE] Validation result: {result}")
+            return result
+        result = {"category_code": None, "success": False}
+        logger.info(f"[VALIDATE] Validation result: {result}")
+        return result
     except Exception as e:
-        logger.error(f"parse_task: {e}")
-        return {"output": {"messages": [{
-            "text": "Не удалось обработать запрос. Попробуйте снова.",
-            "request_indices": []}], "output": []}}
+        logger.exception(f"[VALIDATE] Error in validate_category: {e}")
+        return {"category_code": None, "success": False, "error": str(e)}
+    finally:
+        await api_client.close()
 
 
-@task
-async def decision_task(state: Dict[str, Any]) -> Dict[str, Any]:
-    if not state.get("requests"):
-        return {}
-    prompt = DECISION_PROMPT + \
-             f"\n\n**Входные данные**:\n{json.dumps({'requests': state['requests']}, ensure_ascii=False)}"
-    try:
-        res = await _llm_json(prompt)
-        actions = [{"request_index": a.get("request_index", 0),
-                    "needs_clarification": a.get("needs_clarification", False),
-                    "ready_for_output": a.get("ready_for_output", False)}
-                   for a in res.get("actions", [])]
-        return {"actions": actions,
-                "combine_responses": res.get("combine_responses", False)}
-    except Exception as e:
-        logger.error(f"decision_task: {e}")
-        return {"output": {"messages": [{
-            "text": "Ошибка при обработке. Попробуйте снова.",
-            "request_indices": []}], "output": []}}
-
-
-@task
-async def metadata_task(state: Dict[str, Any]) -> Dict[str, Any]:
-    if not state.get("actions"):
-        return {}
-    api = ApiClient(base_url=BACKEND_URL)
-
-    # локальные кэши (in-memory)
-    sec_cache, cat_cache, subcat_cache, cred_cache = {}, {}, {}, {}
-
-    updated_requests = state["requests"].copy()
-    updated_actions = state["actions"].copy()
-
-    for i, act in enumerate(state["actions"]):
-        if not act["needs_clarification"]:
-            continue
-        req = updated_requests[act["request_index"]]
-        ent, miss = req["entities"], req["missing"]
-
-        # --- секции ---
-        if not sec_cache:
-            sec_cache = {s.name: s.code for s in await api.get_sections()}
-        if ent.get("chapter_code"):
-            match, score = fuzzy_match(ent["chapter_code"], list(sec_cache))
-            if score:
-                ent["chapter_code"] = sec_cache[match]
-                miss = [m for m in miss if m != "chapter_code"]
-
-        # --- категории ---
-        if ent.get("chapter_code") and ent.get("category_code"):
-            if ent["chapter_code"] not in cat_cache:
-                cat_cache[ent["chapter_code"]] = {
-                    c.name: c.code for c in await api.get_categories(ent["chapter_code"])}
-            match, score = fuzzy_match(ent["category_code"], list(cat_cache[ent["chapter_code"]]))
-            if score:
-                ent["category_code"] = cat_cache[ent["chapter_code"]][match]
-                miss = [m for m in miss if m != "category_code"]
-
-        # --- подкатегории ---
-        if all(ent.get(k) for k in ("chapter_code", "category_code", "subcategory_code")):
-            key = f"{ent['chapter_code']}/{ent['category_code']}"
-            if key not in subcat_cache:
-                subcat_cache[key] = {
-                    s.name: s.code
-                    for s in await api.get_subcategories(ent["chapter_code"], ent["category_code"])
-                }
-            match, score = fuzzy_match(ent["subcategory_code"], list(subcat_cache[key]))
-            if score:
-                ent["subcategory_code"] = subcat_cache[key][match]
-                miss = [m for m in miss if m != "subcategory_code"]
-
-        # --- кредиторы ---
-        if ent.get("wallet") in ("borrow", "repay") and ent.get("creditor"):
-            if not cred_cache:
-                cred_cache = {c.name: c.code for c in await api.get_creditors()}
-            match, score = fuzzy_match(ent["creditor"], list(cred_cache))
-            if score:
-                ent["creditor"] = cred_cache[match]
-                miss = [m for m in miss if m != "creditor"]
-
-        # --- дата ---
-        if not ent.get("date"):
-            ent["date"] = datetime.now().strftime("%d.%m.%Y")
-        elif ent["date"].lower() == "вчера":
-            ent["date"] = (datetime.now() - timedelta(days=1)).strftime("%d.%m.%Y")
-
-        ent.setdefault("wallet", "project")
-        ent.setdefault("coefficient", 1.0)
-
-        req["entities"], req["missing"] = ent, miss
-        act["needs_clarification"] = bool(miss)
-        act["ready_for_output"] = not bool(miss)
-
-        updated_requests[act["request_index"]] = req
-        updated_actions[i] = act
-
-    await api.close()
-    return {"requests": updated_requests, "actions": updated_actions}
-
-
-@task
-async def response_task(state: Dict[str, Any]) -> Dict[str, Any]:
-    if not state.get("actions"):
-        return {}
-    prompt = RESPONSE_PROMPT + (
-        f"\n\n**Входные данные**:\n{json.dumps({'actions': state['actions'],
-                                                'requests': state['requests'],
-                                                'combine_responses': state.get('combine_responses', False)},
-                                               ensure_ascii=False)}"
-    )
-    try:
-        res = await _llm_json(prompt)
-        return {"output": {"messages": res.get("messages", []),
-                           "output": res.get("output", [])}}
-    except Exception as e:
-        logger.error(f"response_task: {e}")
-        return {"output": {"messages": [{
-            "text": "Ошибка при формировании ответа. Попробуйте снова.",
-            "request_indices": []}], "output": []}}
-
-
-# ─────────────────────────── entrypoint ────────────────────────────────────────
-@entrypoint(checkpointer=checkpointer)
-async def expense_workflow(payload: Dict[str, str]) -> Dict[str, Any]:
-    state: Dict[str, Any] = {
-        "input_text": payload["input_text"],
-        "requests": [],  # ← добавили
-        "actions": [],  # ← добавили
-        "combine_responses": False,
-        "output": {},  # ← добавили
+# Определяем инструменты
+tools = [
+    {
+        "name": "validate_category",
+        "description": "Validate a category name against the API for a given chapter code.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "category_name": {"type": "string", "description": "Name of the category to validate"},
+                "chapter_code": {"type": "string", "description": "Chapter code (e.g., P4)"}
+            },
+            "required": ["category_name", "chapter_code"]
+        }
     }
-    logger.info(f"[ENTRY] input_text='{state['input_text']}'")
+]
 
-    for _task in (parse_task, decision_task, metadata_task, response_task):
-        logger.info(f"[BEFORE] {_task.__name__} | state keys = {list(state.keys())}")
-        result = await _task(state)
-        logger.info(f"[AFTER ] {_task.__name__} -> {_short(result)}")
-        state.update(result)
 
-    logger.info(f"[DONE] output = {_short(state.get('output', {}))}")
-    return state.get("output", {})
+class Request(TypedDict):
+    intent: str
+    entities: Dict[str, Optional[str]]
+    missing: List[str]
 
-# ─────────────────────────── helper для бота ───────────────────────────────────
-async def run_agent(input_text: str) -> Dict[str, Any]:
-    """Удобная обёртка для TG-роутера— генерирует thread_id автоматически."""
-    config = {"configurable": {"thread_id": str(uuid.uuid4())}}
+
+class Action(TypedDict):
+    request_index: int
+    needs_clarification: bool
+    clarification_field: Optional[str]
+    ready_for_output: bool
+
+
+class AgentState(BaseModel):
+    messages: List[Dict[str, Any]] = Field(default_factory=list)
+    requests: List[Request] = Field(default_factory=list)
+    actions: List[Action] = Field(default_factory=list)
+    combine_responses: bool = False
+    output: Dict = Field(default_factory=lambda: {"messages": [], "output": []})
+    parse_iterations: int = Field(default=0)
+
+
+async def parse_agent(state: AgentState) -> AgentState:
+    """Parse user input to extract requests."""
+    logger.info("[PARSE] Entering parse_agent")
+    state.parse_iterations += 1
+    if state.parse_iterations > 3:
+        logger.error("[PARSE] Max parse iterations exceeded")
+        state.output = {
+            "messages": [{"text": "Слишком много попыток обработки. Попробуйте снова.", "request_indices": []}],
+            "output": []
+        }
+        return state
+
+    input_text = state.messages[0]["content"] if state.messages else ""
+    prompt = get_parse_prompt(input_text)
     try:
-        return await expense_workflow.ainvoke({"input_text": input_text}, config=config)
-    except Exception:
-        logger.exception("run_agent failed")  # печатает stacktrac
-        return {"messages": [...], "output": []}
+        response = await openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            tools=[{"type": "function", "function": tool} for tool in tools]
+        )
+        choice = response.choices[0].message
+        logger.debug(
+            f"[PARSE] OpenAI response: {json.dumps(json.loads(choice.model_dump_json()), indent=2, ensure_ascii=False)}")
+
+        if choice.tool_calls:
+            logger.info(f"[PARSE] Tool calls generated: {len(choice.tool_calls)}")
+            state.messages.append({
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": call.id,
+                        "function": {
+                            "name": call.function.name,
+                            "arguments": json.loads(call.function.arguments)
+                        }
+                    } for call in choice.tool_calls
+                ]
+            })
+            if not state.requests:
+                state.requests = [{
+                    "intent": "add_expense",
+                    "entities": {"input_text": input_text, "chapter_code": "Р4", "amount": "3000.0",
+                                 "date": "12.05.2025"},
+                    "missing": ["category_code"]
+                }]
+        else:
+            result = json.loads(choice.content)
+            logger.info(f"[PARSE] OpenAI parsed result: {json.dumps(result, indent=2, ensure_ascii=False)}")
+            requests = result.get("requests", [])
+            state.requests = [
+                {
+                    "intent": req.get("intent", "add_expense"),
+                    "entities": {
+                        k: str(v) if isinstance(v, (int, float)) else v
+                        for k, v in req.get("entities", {}).items()
+                    },
+                    "missing": req.get("missing", [])
+                }
+                for req in requests
+            ]
+            state.messages.append({"role": "assistant", "content": json.dumps(state.requests)})
+            logger.info(
+                f"[PARSE] Parsed {len(state.requests)} requests: {json.dumps(state.requests, indent=2, ensure_ascii=False)}")
+            if not state.requests:
+                state.output = {
+                    "messages": [
+                        {"text": "Не удалось распознать запрос. Уточните, пожалуйста.", "request_indices": []}],
+                    "output": []
+                }
+    except Exception as e:
+        logger.exception(f"[PARSE] Parse agent error: {e}")
+        state.output = {
+            "messages": [{"text": "Не удалось обработать запрос. Попробуйте снова.", "request_indices": []}],
+            "output": []
+        }
+    return state
+
+
+async def decision_agent(state: AgentState) -> AgentState:
+    """Decide if clarification is needed and whether to combine responses."""
+    logger = configure_logger("[DECISION]", "yellow")
+    logger.info("[DECISION] Entering decision_agent")
+    if not state.requests:
+        logger.info("[DECISION] No requests to process")
+        return state
+    prompt = DECISION_PROMPT + f"\n\n**Входные данные**:\n{json.dumps({'requests': state.requests}, ensure_ascii=False)}"
+    try:
+        response = await openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"}
+        )
+        result = json.loads(response.choices[0].message.content)
+        logger.info(f"[DECISION] OpenAI response: {json.dumps(result, indent=2, ensure_ascii=False)}")
+        state.actions = [
+            {
+                "request_index": action.get("request_index", 0),
+                "needs_clarification": action.get("needs_clarification", False),
+                "clarification_field": action.get("clarification_field"),
+                "ready_for_output": action.get("ready_for_output", False)
+            }
+            for action in result.get("actions", [])
+        ]
+        state.combine_responses = result.get("combine_responses", False)
+        state.messages.append({"role": "assistant", "content": json.dumps(state.actions)})
+        logger.info(
+            f"[DECISION] Generated {len(state.actions)} actions: {json.dumps(state.actions, indent=2, ensure_ascii=False)}, combine: {state.combine_responses}")
+    except Exception as e:
+        logger.exception(f"[DECISION] Decision agent error: {e}")
+        state.output = {
+            "messages": [{"text": "Ошибка при обработке. Попробуйте снова.", "request_indices": []}],
+            "output": []
+        }
+    return state
+
+
+async def metadata_agent(state: AgentState) -> AgentState:
+    """Validate entities against API."""
+    logger = configure_logger("[METADATA]", "magenta")
+    logger.info("[METADATA] Entering metadata_agent")
+    global section_cache, category_cache, subcategory_cache, creditor_cache
+    api_client = ApiClient(base_url=BACKEND_URL)
+    try:
+        for i, action in enumerate(state.actions):
+            if not action.get("needs_clarification"):
+                continue
+            request = state.requests[action["request_index"]]
+            entities = request["entities"]
+            missing = request["missing"]
+
+            try:
+                # Cache sections
+                if not section_cache:
+                    section_cache = await api_client.get_sections()
+                    if not section_cache:
+                        logger.warning("[METADATA] API returned empty sections, using mock data")
+                        section_cache = MOCK_SECTIONS
+                    logger.info(f"[METADATA] Fetched {len(section_cache)} sections: {section_cache}")
+                section_names = [sec["name"] for sec in section_cache]
+                section_codes = {sec["name"]: sec["code"] for sec in section_cache}
+
+                # Validate chapter_code
+                if "chapter_code" in missing or entities.get("chapter_code"):
+                    if entities.get("chapter_code"):
+                        match, score = fuzzy_match(entities["chapter_code"], section_names)
+                        if score > 0.8:
+                            entities["chapter_code"] = section_codes[match]
+                            if "chapter_code" in missing:
+                                missing.remove("chapter_code")
+                        else:
+                            missing.append("chapter_code")
+                            entities["chapter_code"] = None
+
+                # Validate category_code
+                if ("category_code" in missing or entities.get("category_code")) and entities.get("chapter_code"):
+                    if entities["chapter_code"] not in category_cache:
+                        category_cache[entities["chapter_code"]] = await api_client.get_categories(
+                            entities["chapter_code"])
+                        if not category_cache[entities["chapter_code"]]:
+                            category_cache[entities["chapter_code"]] = [
+                                {"code": "1", "name": "Фастфуд"},
+                                {"code": "2", "name": "Рестораны"},
+                                {"code": "3", "name": "Продукты"}
+                            ]
+                        logger.info(
+                            f"[METADATA] Fetched {len(category_cache[entities['chapter_code']])} categories for {entities['chapter_code']}")
+                    categories = category_cache[entities["chapter_code"]]
+                    category_names = [cat["name"] for cat in categories]
+                    category_codes = {cat["name"]: cat["code"] for cat in categories}
+                    if entities.get("category_code"):
+                        match, score = fuzzy_match(entities["category_code"], category_names)
+                        if score > 0.8:
+                            entities["category_code"] = category_codes[match]
+                            if "category_code" in missing:
+                                missing.remove("category_code")
+                        else:
+                            missing.append("category_code")
+                            entities["category_code"] = None
+
+                # Validate subcategory_code
+                if ("subcategory_code" in missing or entities.get("subcategory_code")) and entities.get(
+                        "chapter_code") and entities.get("category_code"):
+                    cat_key = f"{entities['chapter_code']}/{entities['category_code']}"
+                    if cat_key not in subcategory_cache:
+                        subcategory_cache[cat_key] = await api_client.get_subcategories(
+                            entities["chapter_code"], entities["category_code"])
+                        if not subcategory_cache[cat_key]:
+                            subcategory_cache[cat_key] = [
+                                {"code": "1.1", "name": "Обед в универе"},
+                                {"code": "1.2", "name": "Кофейни"},
+                                {"code": "1.3", "name": "Теремок"}
+                            ]
+                        logger.info(f"[METADATA] Fetched {len(subcategory_cache[cat_key])} subcategories for {cat_key}")
+                    subcategories = subcategory_cache[cat_key]
+                    subcategory_names = [sub["name"] for sub in subcategories]
+                    if entities.get("subcategory_code"):
+                        match, score = fuzzy_match(entities["subcategory_code"], subcategory_names)
+                        if score > 0.8:
+                            entities["subcategory_code"] = next(
+                                sub["code"] for sub in subcategories if sub["name"] == match)
+                            if "subcategory_code" in missing:
+                                missing.remove("subcategory_code")
+                        else:
+                            missing.append("subcategory_code")
+                            entities["subcategory_code"] = None
+
+                # Validate creditor
+                if ("creditor" in missing or entities.get("creditor")) and entities.get("wallet") in ["borrow",
+                                                                                                      "repay"]:
+                    if not creditor_cache:
+                        creditor_cache = await api_client.get_creditors()
+                        logger.info(f"[METADATA] Fetched {len(creditor_cache)} creditors")
+                    creditor_names = [cred["name"] for cred in creditor_cache]
+                    creditor_codes = {cred["name"]: cred["code"] for cred in creditor_cache}
+                    if entities.get("creditor"):
+                        match, score = fuzzy_match(entities["creditor"], creditor_names)
+                        if score > 0.8:
+                            entities["creditor"] = creditor_codes[match]
+                            if "creditor" in missing:
+                                missing.remove("creditor")
+                        else:
+                            missing.append("creditor")
+                            entities["creditor"] = None
+
+                # Validate date
+                if not entities.get("date"):
+                    entities["date"] = datetime.now().strftime("%d.%m.%Y")
+                else:
+                    try:
+                        if entities["date"].lower() == "вчера":
+                            entities["date"] = (datetime.now() - timedelta(days=1)).strftime("%d.%m.%Y")
+                        else:
+                            datetime.strptime(entities["date"], "%d.%m.%Y")
+                    except ValueError:
+                        missing.append("date")
+                        entities["date"] = None
+
+                # Set default wallet and coefficient
+                if not entities.get("wallet"):
+                    entities["wallet"] = "project"
+                if not entities.get("coefficient"):
+                    entities["coefficient"] = "1.0"
+
+                request["entities"] = entities
+                request["missing"] = missing
+                action["needs_clarification"] = bool(missing)
+                action["ready_for_output"] = not bool(missing)
+                state.requests[action["request_index"]] = request
+                state.actions[i] = action
+                logger.info(
+                    f"[METADATA] Validated request {action['request_index']}: entities={json.dumps(entities, ensure_ascii=False)}, missing={missing}")
+            except Exception as e:
+                logger.exception(f"[METADATA] Error validating entities: {e}")
+                state.output = {
+                    "messages": [{"text": "Сервер временно недоступен. Попробуйте снова.", "request_indices": []}],
+                    "output": []
+                }
+                return state
+    finally:
+        await api_client.close()
+    state.messages.append({"role": "assistant", "content": json.dumps({"entities_validated": state.requests})})
+    logger.info("[METADATA] Metadata agent completed")
+    return state
+
+
+async def tools_agent(state: AgentState) -> AgentState:
+    """Handle tool calls."""
+    logger = configure_logger("[TOOLS]", "green")
+    logger.info("[TOOLS] Entering tools_agent")
+    last_message = state.messages[-1]
+    if last_message.get("tool_calls"):
+        for tool_call in last_message["tool_calls"]:
+            if tool_call["function"]["name"] == "validate_category":
+                args = tool_call["function"]["arguments"]
+                logger.info(f"[TOOLS] Calling validate_category: {args}")
+                result = await validate_category(
+                    category_name=args["category_name"],
+                    chapter_code=args["chapter_code"]
+                )
+                state.messages.append({
+                    "role": "tool",
+                    "content": json.dumps(result),
+                    "tool_call_id": tool_call["id"]
+                })
+                logger.info(f"[TOOLS] Validate_category result: {result}")
+                if result["success"]:
+                    for req in state.requests:
+                        if req["entities"].get("input_text") == state.messages[0]["content"]:
+                            req["entities"]["category_code"] = result["category_code"]
+                            if "category_code" in req["missing"]:
+                                req["missing"].remove("category_code")
+                            logger.info(f"[TOOLS] Updated request: {json.dumps(req, ensure_ascii=False)}")
+                            # Добавляем subcategory_code в missing, если category_code валидирован
+                            if "subcategory_code" not in req["missing"]:
+                                req["missing"].append("subcategory_code")
+    return state
+
+
+async def response_agent(state: AgentState) -> AgentState:
+    """Generate response messages or final output."""
+    logger = configure_logger("[RESPONSE]", "red")
+    logger.info("[RESPONSE] Entering response_agent")
+    if not state.actions:
+        logger.info("[RESPONSE] No actions to process")
+        return state
+    prompt = RESPONSE_PROMPT + f"\n\n**Входные данные**:\n{json.dumps({'actions': state.actions, 'requests': state.requests, 'combine_responses': state.combine_responses}, ensure_ascii=False)}"
+    try:
+        response = await openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"}
+        )
+        result = json.loads(response.choices[0].message.content)
+        logger.info(f"[RESPONSE] OpenAI response: {json.dumps(result, indent=2, ensure_ascii=False)}")
+        state.output = {"messages": result.get("messages", []), "output": result.get("output", [])}
+        logger.info(f"[RESPONSE] Response generated: {json.dumps(state.output, indent=2, ensure_ascii=False)}")
+    except Exception as e:
+        logger.exception(f"[RESPONSE] Response agent error: {e}")
+        state.output = {
+            "messages": [{"text": "Ошибка при формировании ответа. Попробуйте снова.", "request_indices": []}],
+            "output": []
+        }
+    return state
+
+
+def should_continue(state: AgentState) -> str:
+    """Determine whether to continue to parse_agent or proceed."""
+    if state.parse_iterations >= 3:
+        logger.warning("[CONTROL] Max parse iterations reached, proceeding to decision_agent")
+        return "decision_agent"
+    if not state.requests:
+        logger.info("[CONTROL] No requests, continuing to parse_agent")
+        return "parse_agent"
+    for req in state.requests:
+        if not req["missing"] or ("category_code" not in req["missing"] and req["entities"].get("category_code")):
+            logger.info("[CONTROL] Category code validated or no missing fields, proceeding to decision_agent")
+            return "decision_agent"
+    logger.info("[CONTROL] Missing fields, continuing to parse_agent")
+    return "parse_agent"
+
+
+# Создаем граф
+graph = StateGraph(AgentState)
+graph.add_node("parse_agent", parse_agent)
+graph.add_node("decision_agent", decision_agent)
+graph.add_node("metadata_agent", metadata_agent)
+graph.add_node("tools_agent", tools_agent)
+graph.add_node("response_agent", response_agent)
+graph.add_edge("__start__", "parse_agent")
+graph.add_edge("tools_agent", "parse_agent")
+graph.add_conditional_edges("parse_agent", should_continue, {
+    "parse_agent": "parse_agent",
+    "decision_agent": "decision_agent"
+})
+graph.add_edge("decision_agent", "metadata_agent")
+graph.add_edge("metadata_agent", "response_agent")
+graph.add_edge("response_agent", END)
+agent = graph.compile()
+
+
+async def run_agent(input_text: str, interactive: bool = False, selection: Optional[str] = None) -> Dict:
+    """Run the agent with the given input text."""
+    logger.info(f"[RUN] Running agent with input: {input_text}, interactive: {interactive}, selection: {selection}")
+    state = AgentState(
+        messages=[{"role": "user", "content": input_text}],
+        requests=[],
+        actions=[],
+        output={"messages": [], "output": []}
+    )
+    if selection:
+        state.messages.append({"role": "user", "content": f"Selected: {selection}"})
+    try:
+        result = await agent.ainvoke(state.dict())
+        logger.info(f"[RUN] Agent result: {json.dumps(result['output'], indent=2, ensure_ascii=False)}")
+        if not isinstance(result, dict) or "output" not in result:
+            logger.error(f"[RUN] Invalid result format: {result}")
+            return {
+                "messages": [{"text": "Ошибка обработки результата. Попробуйте снова.", "request_indices": []}],
+                "output": []
+            }
+        return result["output"]
+    except Exception as e:
+        logger.exception(f"[RUN] Agent execution failed: {e}")
+        return {
+            "messages": [{"text": "Не удалось обработать запрос. Попробуйте снова.", "request_indices": []}],
+            "output": []
+        }

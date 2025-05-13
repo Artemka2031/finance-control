@@ -1,11 +1,3 @@
-"""
-prompts.py — исправленная версия
-
-⚠️  Главные изменения:
-1. Все фигурные скобки внутри JSON-примеров экранированы удвоением (`{{` / `}}`).
-2. Для подстановки даты и пользовательского ввода используется метод `.replace`, чтобы не конфликтовать с остальными скобками.
-"""
-
 from datetime import datetime
 
 # Промпт для ParseAgent
@@ -44,12 +36,12 @@ PARSE_PROMPT = """
     - 5.3: СпортПит в зале
     - 5.4: Другие добавки
 - Кошельки: project, borrow, repay, dividends
-- Кредиторы (для borrow, repay): доступны через API `/creditors`
+- Кредиторы (для borrow, repay): доступны через API `/v1/creditors`
 
 **Инструкции**:
 1. По умолчанию:
    - Кошелёк: "project".
-   - Дата: сегодня ({today_date}, формат "dd.mm.yyyy").
+   - Дата: сегодня ({TODAY_DATE}, формат "dd.mm.yyyy").
    - Коэффициент: 1.0.
 2. Определи намерение (`add_expense`, `borrow`, `repay`, `dividends`).
 3. Извлеки параметры для каждого запроса:
@@ -66,11 +58,11 @@ PARSE_PROMPT = """
 5. Укажи отсутствующие параметры в `missing`.
 6. Формат ответа:
    ```json
-   {
+   {{
      "requests": [
-       {
+       {{
          "intent": string,
-         "entities": {
+         "entities": {{
            "amount": float | null,
            "date": "dd.mm.yyyy" | null,
            "wallet": string | null,
@@ -80,24 +72,24 @@ PARSE_PROMPT = """
            "creditor": string | null,
            "coefficient": float | null,
            "comment": string | null
-         },
+         }},
          "missing": [string]
-       }
+       }}
      ]
-   }
+   }}
    ```
 
-**Текст**: "{user_input}"
+**Текст**: "{USER_INPUT}"
 
 **Пример**:
 - Текст: "Потратил 3000 на еду вчера и 2000 на такси"
   Ответ:
   ```json
-  {
+  {{
     "requests": [
-      {
+      {{
         "intent": "add_expense",
-        "entities": {
+        "entities": {{
           "amount": 3000.0,
           "date": "07.05.2025",
           "wallet": "project",
@@ -107,12 +99,12 @@ PARSE_PROMPT = """
           "creditor": null,
           "coefficient": 1.0,
           "comment": null
-        },
+        }},
         "missing": ["category_code", "subcategory_code"]
-      },
-      {
+      }},
+      {{
         "intent": "add_expense",
-        "entities": {
+        "entities": {{
           "amount": 2000.0,
           "date": "07.05.2025",
           "wallet": "project",
@@ -122,20 +114,20 @@ PARSE_PROMPT = """
           "creditor": null,
           "coefficient": 1.0,
           "comment": null
-        },
+        }},
         "missing": ["category_code", "subcategory_code"]
-      }
+      }}
     ]
-  }
+  }}
   ```
 - Текст: "Взял в долг 5000 у Наташи на кофе"
   Ответ:
   ```json
-  {
+  {{
     "requests": [
-      {
+      {{
         "intent": "borrow",
-        "entities": {
+        "entities": {{
           "amount": 5000.0,
           "date": "08.05.2025",
           "wallet": "borrow",
@@ -145,11 +137,11 @@ PARSE_PROMPT = """
           "creditor": null,
           "coefficient": 1.0,
           "comment": null
-        },
+        }},
         "missing": ["creditor"]
-      }
+      }}
     ]
-  }
+  }}
   ```
 """
 
@@ -170,108 +162,108 @@ DECISION_PROMPT = """
    - Формируй отдельные сообщения, если запросы независимы (разные `missing` или разные `intent`).
 3. Верни JSON:
    ```json
-   {
+   {{
      "actions": [
-       {
+       {{
          "request_index": int,
          "needs_clarification": bool,
          "clarification_field": string | null,
          "ready_for_output": bool
-       }
+       }}
      ],
      "combine_responses": bool
-   }
+   }}
    ```
 
 **Пример**:
 - Вход:
   ```json
-  {
+  {{
     "requests": [
-      {
+      {{
         "intent": "add_expense",
-        "entities": {"amount": 3000, "chapter_code": "Р4", "category_code": "1", "subcategory_code": null},
+        "entities": {{"amount": 3000, "chapter_code": "Р4", "category_code": "1", "subcategory_code": null}},
         "missing": ["subcategory_code"]
-      },
-      {
+      }},
+      {{
         "intent": "add_expense",
-        "entities": {"amount": 2000, "chapter_code": "Р2", "category_code": null, "subcategory_code": null},
+        "entities": {{"amount": 2000, "chapter_code": "Р2", "category_code": null, "subcategory_code": null}},
         "missing": ["category_code", "subcategory_code"]
-      }
+      }}
     ]
-  }
+  }}
   ```
   Ответ:
   ```json
-  {
+  {{
     "actions": [
-      {
+      {{
         "request_index": 0,
         "needs_clarification": true,
         "clarification_field": "subcategory_code",
         "ready_for_output": false
-      },
-      {
+      }},
+      {{
         "request_index": 1,
         "needs_clarification": true,
         "clarification_field": "category_code",
         "ready_for_output": false
-      }
+      }}
     ],
     "combine_responses": false
-  }
+  }}
   ```
 """
 
 # Промпт для MetadataAgent
 METADATA_PROMPT = """
-Ты агент валидации метаданных. Твоя задача — проверить параметры запроса против API (`http://localhost:8000/keyboard/sections`, `/categories/{sec_code}`, `/subcategories/{sec_code}/{cat_code}`, `/creditors`) и вернуть валидные коды.
+Ты агент валидации метаданных. Твоя задача — проверить параметры запроса против API (`http://localhost:8000/v1/keyboard/sections`, `/v1/keyboard/categories/{sec_code}`, `/v1/keyboard/subcategories/{sec_code}/{cat_code}`, `/v1/creditors`) и вернуть валидные коды.
 
 **Входные данные**:
 - Запрос с `entities` (например, `chapter_code`, `category_code`, `subcategory_code`, `creditor`).
 
 **Инструкции**:
 1. Проверь `chapter_code`:
-   - Запроси `/keyboard/sections`.
+   - Запроси `/v1/keyboard/sections`.
    - Найди код по имени (fuzzy matching, порог 80%).
 2. Если есть `category_code` и `chapter_code`:
-   - Запроси `/keyboard/categories/{chapter_code}`.
+   - Запроси `/v1/keyboard/categories/{chapter_code}`.
    - Проверь или найди код категории.
 3. Если есть `subcategory_code`, `chapter_code`, `category_code`:
-   - Запроси `/keyboard/subcategories/{chapter_code}/{category_code}`.
+   - Запроси `/v1/keyboard/subcategories/{chapter_code}/{category_code}`.
    - Проверь или найди код подкатегории.
 4. Если `wallet` = "borrow" или "repay", проверь `creditor`:
-   - Запроси `/creditors`.
+   - Запроси `/v1/creditors`.
    - Найди код кредитора.
 5. Если данные некорректны, добавь в `missing`.
 6. Формат ответа:
    ```json
-   {
-     "entities": {
+   {{
+     "entities": {{
        "chapter_code": string | null,
        "category_code": string | null,
        "subcategory_code": string | null,
        "creditor": string | null,
        "coefficient": float | null
-     },
+     }},
      "missing": [string]
-   }
+   }}
    ```
 
 **Пример**:
 - Вход: `chapter_code: "Р4", category_code: "1", subcategory_code: "1.2", creditor: "Наташа", wallet: "borrow"`
   Ответ:
   ```json
-  {
-    "entities": {
+  {{
+    "entities": {{
       "chapter_code": "Р4",
       "category_code": "1",
       "subcategory_code": "1.2",
       "creditor": "NAT",
       "coefficient": 1.0
-    },
+    }},
     "missing": []
-  }
+  }}
   ```
 """
 
@@ -282,14 +274,14 @@ RESPONSE_PROMPT = """
 **Входные данные**:
 - Список действий от DecisionAgent.
 - Валидированные запросы с `entities` и `missing`.
-- Доступ к API для клавиатур (`http://localhost:8000/keyboard/sections`, `/categories/{sec_code}`, `/subcategories/{sec_code}/{cat_code}`, `/creditors`).
+- Доступ к API для клавиатур (`http://localhost:8000/v1/keyboard/sections`, `/v1/keyboard/categories/{sec_code}`, `/v1/keyboard/subcategories/{sec_code}/{cat_code}`, `/v1/creditors`).
 
 **Инструкции**:
 1. Если требуется уточнение:
-   - Для `chapter_code`: запроси `/keyboard/sections`, создай клавиатуру с `ChooseSectionCallback`.
-   - Для `category_code`: запроси `/keyboard/categories/{chapter_code}`, создай клавиатуру с `ChooseCategoryCallback`.
-   - Для `subcategory_code`: запроси `/keyboard/subcategories/{chapter_code}/{category_code}`, создай клавиатуру с `ChooseSubCategoryCallback`.
-   - Для `creditor`: запроси `/creditors`, создай клавиатуру с `ChooseCreditorCallback`.
+   - Для `chapter_code`: запроси `/v1/keyboard/sections`, создай клавиатуру с `ChooseSectionCallback`.
+   - Для `category_code`: запроси `/v1/keyboard/categories/{chapter_code}`, создай клавиатуру с `ChooseCategoryCallback`.
+   - Для `subcategory_code`: запроси `/v1/keyboard/subcategories/{chapter_code}/{category_code}`, создай клавиатуру с `ChooseSubCategoryCallback`.
+   - Для `creditor`: запроси `/v1/creditors`, создай клавиатуру с `ChooseCreditorCallback`.
    - Верни сообщение и клавиатуру.
 2. Если запрос готов:
    - Верни JSON с параметрами для FSM (`Expense:confirm`).
@@ -297,60 +289,60 @@ RESPONSE_PROMPT = """
    - Объедини уточнения в одно сообщение с общей клавиатурой.
 4. Формат ответа:
    ```json
-   {
+   {{
      "messages": [
-       {
+       {{
          "text": string,
          "keyboard": object | null,
          "request_indices": [int]
-       }
+       }}
      ],
      "output": [
-       {
+       {{
          "request_index": int,
          "entities": object | null
-       }
+       }}
      ]
-   }
+   }}
    ```
 
 **Пример**:
 - Вход:
   ```json
-  {
+  {{
     "actions": [
-      {
+      {{
         "request_index": 0,
         "needs_clarification": true,
         "clarification_field": "subcategory_code",
         "ready_for_output": false
-      }
+      }}
     ],
     "combine_responses": true,
     "requests": [
-      {
-        "entities": {"chapter_code": "Р4", "category_code": "1"},
+      {{
+        "entities": {{"chapter_code": "Р4", "category_code": "1"}},
         "missing": ["subcategory_code"]
-      }
+      }}
     ]
-  }
+  }}
   ```
   Ответ:
   ```json
-  {
+  {{
     "messages": [
-      {
+      {{
         "text": "Уточните подкатегорию для Фастфуд:",
-        "keyboard": {"inline_keyboard": [[{"text": "Кофейни", "callback_data": "CS:subcategory_code=1.2"}]]},
+        "keyboard": {{"inline_keyboard": [[{{"text": "Кофейни", "callback_data": "CS:subcategory_code=1.2"}}]]}},
         "request_indices": [0]
-      }
+      }}
     ],
     "output": []
-  }
+  }}
   ```
 """
 
 
 def get_parse_prompt(user_input: str) -> str:
     today = datetime.now().strftime("%d.%m.%Y")
-    return PARSE_PROMPT.format(today_date=today, user_input=user_input)
+    return PARSE_PROMPT.replace("{TODAY_DATE}", today).replace("{USER_INPUT}", user_input or "")

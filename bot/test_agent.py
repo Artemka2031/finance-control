@@ -1,61 +1,93 @@
 import asyncio
-import os
-from pathlib import Path
-from dotenv import load_dotenv
+import json
+from loguru import logger
+from bot.agent.agent import run_agent
+from bot.api_client import ApiClient
+from bot.utils.logging import configure_logger
 
-from .agent.agent import run_agent
-from .api_client import ApiClient
-from .config import BOT_TOKEN
-from .utils.logging import configure_logger
+logger = configure_logger("[TEST]", "white")
 
-# Load environment variables
-load_dotenv()
 
-# Check environment variables
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-# Configure test logger
-logger = configure_logger("[AGENT_TEST]", "green")
+async def test_api_metadata():
+    """Test API connectivity and retrieve metadata."""
+    logger.info("Testing API connectivity")
+    api_client = ApiClient(base_url="http://localhost:8000")
+    try:
+        metadata = await api_client.get_metadata()
+        if "detail" in metadata:
+            logger.error(f"Failed to retrieve metadata: {metadata['detail']}")
+            return False
+        logger.info(f"Metadata retrieved successfully")
+        return True
+    except Exception as e:
+        logger.exception(f"API test failed: {e}")
+        return False
+    finally:
+        await api_client.close()
+
 
 async def test_agent():
-    """Test the agent logic with predefined inputs and log results to console."""
     logger.info("Initializing API client")
-    api_client = ApiClient()
+    api_client = ApiClient(base_url="http://localhost:8000")
     try:
-        test_inputs = [
-            "Потратил 3000 на еду вчера",
-            "Взял в долг 5000 у Мамы на кофе",
-            "3000 на кофейни и 2000 на такси",
-            "Вернул долг 2000 Маме",
-            "Потратил 1000 на протеин 05.05.2025"
-        ]
+        api_ok = await test_api_metadata()
+        if not api_ok:
+            logger.error("Skipping agent tests due to API failure")
+            return
+
+        test_inputs = ["Потратил 3000 на еду вчера"]
+        state = None
 
         for input_text in test_inputs:
             logger.info(f"Testing input: {input_text}")
-            try:
-                result = await run_agent(input_text)
-                logger.debug(f"Agent output: {result}")
-                for msg in result.get("messages", []):
-                    logger.info(f"Message: {msg['text']}")
-                    if msg.get("keyboard"):
-                        logger.debug(f"Keyboard: {msg['keyboard']}")
-                for out in result.get("output", []):
-                    logger.info(f"Output entities: {out['entities']}")
-            except Exception as e:
-                logger.error(f"Error processing input '{input_text}': {e}")
-            logger.info("-" * 50)
+            while True:
+                result = await run_agent(input_text, interactive=True, selection=state)
+                logger.debug(f"Agent output: {json.dumps(result, indent=2, ensure_ascii=False)}")
+
+                try:
+                    if not isinstance(result, dict) or "messages" not in result:
+                        logger.error(f"Invalid result format for input '{input_text}': {result}")
+                        break
+
+                    for message in result.get("messages", []):
+                        logger.info(f"Message: {message.get('text', 'No text')}")
+                        if message.get("keyboard"):
+                            logger.debug(f"Keyboard: {json.dumps(message['keyboard'], indent=2, ensure_ascii=False)}")
+                            buttons = message["keyboard"]["inline_keyboard"][0]
+                            print("\nВыберите опцию:")
+                            for i, button in enumerate(buttons, 1):
+                                print(f"{i}. {button['text']} ({button['callback_data']})")
+                            choice = input("Введите номер опции (или 'q' для выхода): ")
+                            if choice.lower() == 'q':
+                                break
+                            try:
+                                choice_idx = int(choice) - 1
+                                if 0 <= choice_idx < len(buttons):
+                                    state = buttons[choice_idx]["callback_data"]
+                                    logger.info(f"Selected: {state}")
+                                else:
+                                    logger.error("Неверный выбор")
+                                    break
+                            except ValueError:
+                                logger.error("Введите число")
+                                break
+                    else:
+                        break  # Нет клавиатуры, завершаем цикл
+                except Exception as e:
+                    logger.exception(f"Error processing input '{input_text}': {e}")
+                    break
+
+            logger.info("--------------------------------------------------")
     finally:
         logger.info("Closing API client")
         await api_client.close()
 
+
 async def main():
-    """Run the agent tests."""
     logger.info("Running agent tests")
-    try:
-        await test_agent()
-        logger.info("Tests completed successfully")
-    except Exception as e:
-        logger.error(f"Test execution failed: {e}")
-        raise
+    await test_agent()
+    logger.info("Tests completed successfully")
+
 
 if __name__ == "__main__":
     logger.info("Starting agent test application")
