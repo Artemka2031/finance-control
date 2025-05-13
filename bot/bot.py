@@ -1,53 +1,65 @@
 import asyncio
-
-from aiogram import Bot, Dispatcher
-from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
-
-from .comands import set_bot_commands
-from .routers.start_router import create_start_router
+import os
+from dotenv import load_dotenv
+from .agent.agent import run_agent
 from .api_client import ApiClient
 from .config import BOT_TOKEN
-from .middleware.error_handling import ErrorHandlingMiddleware
-from .middleware.logging import LoggingMiddleware
-from .routers.expenses.expenses_router import create_expenses_router
-# from .routers.income.income_router import create_income_router
 from .utils.logging import configure_logger
 
-# Configure bot logger
-logger = configure_logger("[BOT]", "green")
+# Load environment variables
+load_dotenv()
+
+# Check environment variables
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+if not OPENAI_API_KEY:
+    raise ValueError("OPENAI_API_KEY is not set in .env file. Please add it to P:\\Python\\finance-control\\.env")
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN is not set in .env file")
+
+# Configure test logger
+logger = configure_logger("[AGENT_TEST]", "green")
+
+async def test_agent():
+    """Test the agent logic with predefined inputs and log results to console."""
+    logger.info("Initializing API client")
+    api_client = ApiClient()
+    try:
+        test_inputs = [
+            "Потратил 3000 на еду вчера",
+            "Взял в долг 5000 у Наташи на кофе",
+            "3000 на кофейни и 2000 на такси",
+            "Вернул долг 2000 Наташе",
+            "Потратил 1000 на протеин 05.05.2025"
+        ]
+
+        for input_text in test_inputs:
+            logger.info(f"Testing input: {input_text}")
+            try:
+                result = await run_agent(input_text)
+                logger.debug(f"Agent output: {result}")
+                for msg in result.get("messages", []):
+                    logger.info(f"Message: {msg['text']}")
+                    if msg.get("keyboard"):
+                        logger.debug(f"Keyboard: {msg['keyboard']}")
+                for out in result.get("output", []):
+                    logger.info(f"Output entities: {out['entities']}")
+            except Exception as e:
+                logger.error(f"Error processing input '{input_text}': {e}")
+            logger.info("-" * 50)
+    finally:
+        logger.info("Closing API client")
+        await api_client.close()
 
 async def main():
-    # Initialize bot and dispatcher
-    logger.info("Initializing bot and dispatcher")
-    bot = Bot(
-        token=BOT_TOKEN,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML)
-    )
-    dp = Dispatcher()
-    api_client = ApiClient()
-
-    # Setup middleware
-    logger.debug("Registering middleware")
-    dp.update.middleware(ErrorHandlingMiddleware())
-    dp.update.middleware(LoggingMiddleware())
-
-    # Register routers
-    logger.debug("Registering routers")
-    dp.include_router(create_start_router(bot))
-    dp.include_router(create_expenses_router(bot, api_client))
-    # dp.include_router(create_income_router(bot, api_client))
-
-    # Start polling
+    """Run the agent tests."""
+    logger.info("Running agent tests")
     try:
-        logger.info("Bot is starting...")
-        await set_bot_commands(bot)
-        await dp.start_polling(bot)
-    finally:
-        logger.info("Bot is shutting down...")
-        await api_client.close()
-        await bot.session.close()
+        await test_agent()
+        logger.info("Tests completed successfully")
+    except Exception as e:
+        logger.error(f"Test execution failed: {e}")
+        raise
 
 if __name__ == "__main__":
-    logger.info("Starting bot application")
+    logger.info("Starting agent test application")
     asyncio.run(main())

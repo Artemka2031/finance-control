@@ -1,3 +1,11 @@
+"""
+prompts.py — исправленная версия
+
+⚠️  Главные изменения:
+1. Все фигурные скобки внутри JSON-примеров экранированы удвоением (`{{` / `}}`).
+2. Для подстановки даты и пользовательского ввода используется метод `.replace`, чтобы не конфликтовать с остальными скобками.
+"""
+
 from datetime import datetime
 
 # Промпт для ParseAgent
@@ -36,7 +44,7 @@ PARSE_PROMPT = """
     - 5.3: СпортПит в зале
     - 5.4: Другие добавки
 - Кошельки: project, borrow, repay, dividends
-- Кредиторы (для borrow, repay): доступны через API `/v1/creditors`
+- Кредиторы (для borrow, repay): доступны через API `/creditors`
 
 **Инструкции**:
 1. По умолчанию:
@@ -217,23 +225,23 @@ DECISION_PROMPT = """
 
 # Промпт для MetadataAgent
 METADATA_PROMPT = """
-Ты агент валидации метаданных. Твоя задача — проверить параметры запроса против API (`http://localhost:8000/v1/keyboard/sections`, `/categories/{sec_code}`, `/subcategories/{sec_code}/{cat_code}`, `/creditors`) и вернуть валидные коды.
+Ты агент валидации метаданных. Твоя задача — проверить параметры запроса против API (`http://localhost:8000/keyboard/sections`, `/categories/{sec_code}`, `/subcategories/{sec_code}/{cat_code}`, `/creditors`) и вернуть валидные коды.
 
 **Входные данные**:
 - Запрос с `entities` (например, `chapter_code`, `category_code`, `subcategory_code`, `creditor`).
 
 **Инструкции**:
 1. Проверь `chapter_code`:
-   - Запроси `/v1/keyboard/sections`.
+   - Запроси `/keyboard/sections`.
    - Найди код по имени (fuzzy matching, порог 80%).
 2. Если есть `category_code` и `chapter_code`:
-   - Запроси `/v1/keyboard/categories/{chapter_code}`.
+   - Запроси `/keyboard/categories/{chapter_code}`.
    - Проверь или найди код категории.
 3. Если есть `subcategory_code`, `chapter_code`, `category_code`:
-   - Запроси `/v1/keyboard/subcategories/{chapter_code}/{category_code}`.
+   - Запроси `/keyboard/subcategories/{chapter_code}/{category_code}`.
    - Проверь или найди код подкатегории.
 4. Если `wallet` = "borrow" или "repay", проверь `creditor`:
-   - Запроси `/v1/creditors`.
+   - Запроси `/creditors`.
    - Найди код кредитора.
 5. Если данные некорректны, добавь в `missing`.
 6. Формат ответа:
@@ -274,14 +282,14 @@ RESPONSE_PROMPT = """
 **Входные данные**:
 - Список действий от DecisionAgent.
 - Валидированные запросы с `entities` и `missing`.
-- Доступ к API для клавиатур (`http://localhost:8000/v1/keyboard/sections`, `/categories/{sec_code}`, `/subcategories/{sec_code}/{cat_code}`, `/creditors`).
+- Доступ к API для клавиатур (`http://localhost:8000/keyboard/sections`, `/categories/{sec_code}`, `/subcategories/{sec_code}/{cat_code}`, `/creditors`).
 
 **Инструкции**:
 1. Если требуется уточнение:
-   - Для `chapter_code`: запроси `/v1/keyboard/sections`, создай клавиатуру с `ChooseSectionCallback`.
-   - Для `category_code`: запроси `/v1/keyboard/categories/{chapter_code}`, создай клавиатуру с `ChooseCategoryCallback`.
-   - Для `subcategory_code`: запроси `/v1/keyboard/subcategories/{chapter_code}/{category_code}`, создай клавиатуру с `ChooseSubCategoryCallback`.
-   - Для `creditor`: запроси `/v1/creditors`, создай клавиатуру с `ChooseCreditorCallback`.
+   - Для `chapter_code`: запроси `/keyboard/sections`, создай клавиатуру с `ChooseSectionCallback`.
+   - Для `category_code`: запроси `/keyboard/categories/{chapter_code}`, создай клавиатуру с `ChooseCategoryCallback`.
+   - Для `subcategory_code`: запроси `/keyboard/subcategories/{chapter_code}/{category_code}`, создай клавиатуру с `ChooseSubCategoryCallback`.
+   - Для `creditor`: запроси `/creditors`, создай клавиатуру с `ChooseCreditorCallback`.
    - Верни сообщение и клавиатуру.
 2. Если запрос готов:
    - Верни JSON с параметрами для FSM (`Expense:confirm`).

@@ -11,6 +11,10 @@ from pydantic import BaseModel, Field
 load_dotenv()
 BACKEND_URL = os.getenv("BACKEND_URL")
 
+# Проверка BACKEND_URL
+if not BACKEND_URL:
+    raise ValueError("BACKEND_URL is not set in .env file. Please add it to P:\\Python\\finance-control\\.env")
+
 # Модели данных, соответствующие эндпоинтам
 class CodeName(BaseModel):
     code: str
@@ -53,11 +57,17 @@ class CreditorIn(BaseModel):
 class ApiClient:
     def __init__(self, base_url: str = BACKEND_URL):
         self.base_url = base_url
-        self.session = aiohttp.ClientSession()
+        self.session: Optional[aiohttp.ClientSession] = None
+
+    async def _ensure_session(self):
+        """Ленивая инициализация aiohttp.ClientSession."""
+        if self.session is None or self.session.closed:
+            self.session = aiohttp.ClientSession()
 
     async def close(self):
         """Закрытие сессии aiohttp."""
-        await self.session.close()
+        if self.session and not self.session.closed:
+            await self.session.close()
 
     def build_inline_keyboard(
             self,
@@ -78,11 +88,11 @@ class ApiClient:
 
     async def _make_request(self, method: str, endpoint: str, **kwargs) -> Dict[str, Any]:
         """Внутренний метод для выполнения HTTP-запросов."""
+        await self._ensure_session()
         try:
             async with self.session.request(method, f"{self.base_url}{endpoint}", **kwargs) as resp:
                 data = await resp.json()
                 if resp.status >= 400:
-                    # Handle string detail for compatibility
                     if "detail" in data and isinstance(data["detail"], str):
                         data["detail"] = [{"type": "error", "msg": data["detail"]}]
                     return {"detail": data.get("detail", [{"type": "http_error", "msg": f"HTTP {resp.status}"}])}
@@ -90,7 +100,6 @@ class ApiClient:
         except aiohttp.ClientError as e:
             return {"detail": [{"type": "request_error", "msg": str(e)}]}
 
-    # --- Служебные методы ---
     async def refresh_data(self) -> Dict[str, str]:
         """Обновление кэша и данных из Google Sheets."""
         return await self._make_request("POST", "/v1/service/refresh")
@@ -99,7 +108,6 @@ class ApiClient:
         """Получение полной структуры метаданных из Google Sheets."""
         return await self._make_request("GET", "/v1/service/meta")
 
-    # --- Методы для клавиатур ---
     async def get_incomes(self) -> List[CodeName]:
         """Получение списка категорий доходов."""
         data = await self._make_request("GET", "/v1/keyboard/incomes")
@@ -135,7 +143,6 @@ class ApiClient:
             return []
         return [CodeName(**item) for item in data]
 
-    # --- Методы аналитики ---
     async def day_breakdown(
             self,
             date: str,
@@ -203,7 +210,6 @@ class ApiClient:
         }
         return await self._make_request("GET", "/v1/analytics/months_overview", params=params)
 
-    # --- Методы операций ---
     async def get_task_status(self, task_id: str) -> Dict[str, Any]:
         """Получение статуса задачи из очереди."""
         return await self._make_request("GET", f"/v1/operations/task/{task_id}")
