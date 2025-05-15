@@ -1,15 +1,17 @@
 import json
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Any
-from typing_extensions import TypedDict
+
 from langgraph.graph import StateGraph, END
 from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
-from ..api_client import ApiClient
-from ..utils.logging import configure_logger
+from typing_extensions import TypedDict
+
 from .config import OPENAI_API_KEY, BACKEND_URL
 from .prompts import get_parse_prompt, DECISION_PROMPT, RESPONSE_PROMPT
 from .utils import fuzzy_match
+from ..api_client import ApiClient, CodeName
+from ..utils.logging import configure_logger
 
 # Logger
 logger = configure_logger("[AGENT]", "blue")
@@ -23,18 +25,10 @@ except Exception as e:
     raise
 
 # Cache for API responses
-section_cache: List[Dict] = []
-category_cache: Dict[str, List[Dict]] = {}
-subcategory_cache: Dict[str, List[Dict]] = {}
-creditor_cache: List[Dict] = []
-
-# Mock sections for testing
-MOCK_SECTIONS = [
-    {"code": "Р4", "name": "Еда"},
-    {"code": "Р2", "name": "Транспорт"},
-    {"code": "Р1", "name": "Подарки"}
-]
-
+section_cache: List[CodeName] = []
+category_cache: Dict[str, List[CodeName]] = {}
+subcategory_cache: Dict[str, List[CodeName]] = {}
+creditor_cache: List[CodeName] = []
 
 async def validate_category(category_name: str, chapter_code: str) -> Dict[str, Any]:
     """Validate category name against API and return category code."""
@@ -45,17 +39,14 @@ async def validate_category(category_name: str, chapter_code: str) -> Dict[str, 
         if not categories:
             logger.debug(f"[VALIDATE] Fetching categories for chapter_code: {chapter_code}")
             categories = await api_client.get_categories(chapter_code)
-            if not categories:  # Mock categories if API fails
-                categories = [
-                    {"code": "1", "name": "Фастфуд"},
-                    {"code": "2", "name": "Рестораны"},
-                    {"code": "3", "name": "Продукты"}
-                ]
+            if not categories:
+                logger.error(f"[VALIDATE] No categories found for chapter_code: {chapter_code}")
+                return {"category_code": None, "success": False, "error": "No categories available"}
             category_cache[chapter_code] = categories
-        category_names = [cat["name"] for cat in categories]
+        category_names = [cat.name for cat in categories]
         match, score = fuzzy_match(category_name, category_names)
-        if score > 0.8:
-            result = {"category_code": next(cat["code"] for cat in categories if cat["name"] == match), "success": True}
+        if score > 0.9:
+            result = {"category_code": next(cat.code for cat in categories if cat.name == match), "success": True}
             logger.info(f"[VALIDATE] Validation result: {result}")
             return result
         result = {"category_code": None, "success": False}
@@ -66,7 +57,6 @@ async def validate_category(category_name: str, chapter_code: str) -> Dict[str, 
         return {"category_code": None, "success": False, "error": str(e)}
     finally:
         await api_client.close()
-
 
 # Определяем инструменты
 tools = [
@@ -84,19 +74,16 @@ tools = [
     }
 ]
 
-
 class Request(TypedDict):
     intent: str
     entities: Dict[str, Optional[str]]
     missing: List[str]
-
 
 class Action(TypedDict):
     request_index: int
     needs_clarification: bool
     clarification_field: Optional[str]
     ready_for_output: bool
-
 
 class AgentState(BaseModel):
     messages: List[Dict[str, Any]] = Field(default_factory=list)
@@ -105,7 +92,6 @@ class AgentState(BaseModel):
     combine_responses: bool = False
     output: Dict = Field(default_factory=lambda: {"messages": [], "output": []})
     parse_iterations: int = Field(default=0)
-
 
 async def parse_agent(state: AgentState) -> AgentState:
     """Parse user input to extract requests."""
@@ -150,9 +136,15 @@ async def parse_agent(state: AgentState) -> AgentState:
             if not state.requests:
                 state.requests = [{
                     "intent": "add_expense",
-                    "entities": {"input_text": input_text, "chapter_code": "Р4", "amount": "3000.0",
-                                 "date": "12.05.2025"},
-                    "missing": ["category_code"]
+                    "entities": {
+                        "input_text": input_text,
+                        "chapter_code": "Р4",
+                        "amount": "3000.0",
+                        "date": (datetime.now() - timedelta(days=1)).strftime("%d.%m.%Y"),
+                        "wallet": "project",
+                        "coefficient": "1.0"
+                    },
+                    "missing": ["category_code", "subcategory_code"]
                 }]
         else:
             result = json.loads(choice.content)
@@ -185,7 +177,6 @@ async def parse_agent(state: AgentState) -> AgentState:
             "output": []
         }
     return state
-
 
 async def decision_agent(state: AgentState) -> AgentState:
     """Decide if clarification is needed and whether to combine responses."""
@@ -224,7 +215,6 @@ async def decision_agent(state: AgentState) -> AgentState:
         }
     return state
 
-
 async def metadata_agent(state: AgentState) -> AgentState:
     """Validate entities against API."""
     logger = configure_logger("[METADATA]", "magenta")
@@ -244,18 +234,22 @@ async def metadata_agent(state: AgentState) -> AgentState:
                 if not section_cache:
                     section_cache = await api_client.get_sections()
                     if not section_cache:
-                        logger.warning("[METADATA] API returned empty sections, using mock data")
-                        section_cache = MOCK_SECTIONS
-                    logger.info(f"[METADATA] Fetched {len(section_cache)} sections: {section_cache}")
-                section_names = [sec["name"] for sec in section_cache]
-                section_codes = {sec["name"]: sec["code"] for sec in section_cache}
+                        logger.error("[METADATA] API returned empty sections")
+                        state.output = {
+                            "messages": [
+                                {"text": "Сервер не вернул разделы. Попробуйте снова.", "request_indices": []}],
+                            "output": []
+                        }
+                        return state
+                    logger.info(
+                        f"[METADATA] Fetched {len(section_cache)} sections: {[{'code': sec.code, 'name': sec.name} for sec in section_cache]}")
+                section_names = [sec.name for sec in section_cache]
+                section_codes = {sec.name: sec.code for sec in section_cache}
 
                 # Validate chapter_code
                 if "chapter_code" in missing or entities.get("chapter_code"):
                     if entities.get("chapter_code"):
-                        match, score = fuzzy_match(entities["chapter_code"], section_names)
-                        if score > 0.8:
-                            entities["chapter_code"] = section_codes[match]
+                        if entities["chapter_code"] in [sec.code for sec in section_cache]:
                             if "chapter_code" in missing:
                                 missing.remove("chapter_code")
                         else:
@@ -268,19 +262,22 @@ async def metadata_agent(state: AgentState) -> AgentState:
                         category_cache[entities["chapter_code"]] = await api_client.get_categories(
                             entities["chapter_code"])
                         if not category_cache[entities["chapter_code"]]:
-                            category_cache[entities["chapter_code"]] = [
-                                {"code": "1", "name": "Фастфуд"},
-                                {"code": "2", "name": "Рестораны"},
-                                {"code": "3", "name": "Продукты"}
-                            ]
+                            logger.error(f"[METADATA] No categories for chapter_code: {entities['chapter_code']}")
+                            state.output = {
+                                "messages": [{"text": f"Нет категорий для раздела {entities['chapter_code']}.",
+                                              "request_indices": []}],
+                                "output": []
+                            }
+                            return state
                         logger.info(
                             f"[METADATA] Fetched {len(category_cache[entities['chapter_code']])} categories for {entities['chapter_code']}")
                     categories = category_cache[entities["chapter_code"]]
-                    category_names = [cat["name"] for cat in categories]
-                    category_codes = {cat["name"]: cat["code"] for cat in categories}
+                    logger.warning(f"Categories: {categories}")
+                    category_names = [cat.name for cat in categories]
+                    category_codes = {cat.name: cat.code for cat in categories}
                     if entities.get("category_code"):
                         match, score = fuzzy_match(entities["category_code"], category_names)
-                        if score > 0.8:
+                        if score > 0.9:
                             entities["category_code"] = category_codes[match]
                             if "category_code" in missing:
                                 missing.remove("category_code")
@@ -293,22 +290,18 @@ async def metadata_agent(state: AgentState) -> AgentState:
                         "chapter_code") and entities.get("category_code"):
                     cat_key = f"{entities['chapter_code']}/{entities['category_code']}"
                     if cat_key not in subcategory_cache:
-                        subcategory_cache[cat_key] = await api_client.get_subcategories(
-                            entities["chapter_code"], entities["category_code"])
+                        subcategory_cache[cat_key] = await api_client.get_subcategories(entities["chapter_code"],
+                                                                                        entities["category_code"])
                         if not subcategory_cache[cat_key]:
-                            subcategory_cache[cat_key] = [
-                                {"code": "1.1", "name": "Обед в универе"},
-                                {"code": "1.2", "name": "Кофейни"},
-                                {"code": "1.3", "name": "Теремок"}
-                            ]
+                            logger.warning(f"[METADATA] No subcategories for {cat_key}")
                         logger.info(f"[METADATA] Fetched {len(subcategory_cache[cat_key])} subcategories for {cat_key}")
                     subcategories = subcategory_cache[cat_key]
-                    subcategory_names = [sub["name"] for sub in subcategories]
+                    subcategory_names = [sub.name for sub in subcategories]
+                    subcategory_codes = {sub.name: sub.code for sub in subcategories}
                     if entities.get("subcategory_code"):
                         match, score = fuzzy_match(entities["subcategory_code"], subcategory_names)
-                        if score > 0.8:
-                            entities["subcategory_code"] = next(
-                                sub["code"] for sub in subcategories if sub["name"] == match)
+                        if score > 0.9:
+                            entities["subcategory_code"] = subcategory_codes[match]
                             if "subcategory_code" in missing:
                                 missing.remove("subcategory_code")
                         else:
@@ -321,11 +314,11 @@ async def metadata_agent(state: AgentState) -> AgentState:
                     if not creditor_cache:
                         creditor_cache = await api_client.get_creditors()
                         logger.info(f"[METADATA] Fetched {len(creditor_cache)} creditors")
-                    creditor_names = [cred["name"] for cred in creditor_cache]
-                    creditor_codes = {cred["name"]: cred["code"] for cred in creditor_cache}
+                    creditor_names = [cred.name for cred in creditor_cache]
+                    creditor_codes = {cred.name: cred.code for cred in creditor_cache}
                     if entities.get("creditor"):
                         match, score = fuzzy_match(entities["creditor"], creditor_names)
-                        if score > 0.8:
+                        if score > 0.9:
                             entities["creditor"] = creditor_codes[match]
                             if "creditor" in missing:
                                 missing.remove("creditor")
@@ -373,7 +366,6 @@ async def metadata_agent(state: AgentState) -> AgentState:
     logger.info("[METADATA] Metadata agent completed")
     return state
 
-
 async def tools_agent(state: AgentState) -> AgentState:
     """Handle tool calls."""
     logger = configure_logger("[TOOLS]", "green")
@@ -382,7 +374,7 @@ async def tools_agent(state: AgentState) -> AgentState:
     if last_message.get("tool_calls"):
         for tool_call in last_message["tool_calls"]:
             if tool_call["function"]["name"] == "validate_category":
-                args = tool_call["function"]["arguments"]
+                args = json.loads(tool_call["function"]["arguments"])
                 logger.info(f"[TOOLS] Calling validate_category: {args}")
                 result = await validate_category(
                     category_name=args["category_name"],
@@ -396,16 +388,13 @@ async def tools_agent(state: AgentState) -> AgentState:
                 logger.info(f"[TOOLS] Validate_category result: {result}")
                 if result["success"]:
                     for req in state.requests:
-                        if req["entities"].get("input_text") == state.messages[0]["content"]:
-                            req["entities"]["category_code"] = result["category_code"]
-                            if "category_code" in req["missing"]:
-                                req["missing"].remove("category_code")
-                            logger.info(f"[TOOLS] Updated request: {json.dumps(req, ensure_ascii=False)}")
-                            # Добавляем subcategory_code в missing, если category_code валидирован
-                            if "subcategory_code" not in req["missing"]:
-                                req["missing"].append("subcategory_code")
+                        req["entities"]["category_code"] = result["category_code"]
+                        if "category_code" in req["missing"]:
+                            req["missing"].remove("category_code")
+                        if "subcategory_code" not in req["missing"]:
+                            req["missing"].append("subcategory_code")
+                        logger.info(f"[TOOLS] Updated request: {json.dumps(req, ensure_ascii=False)}")
     return state
-
 
 async def response_agent(state: AgentState) -> AgentState:
     """Generate response messages or final output."""
@@ -414,25 +403,95 @@ async def response_agent(state: AgentState) -> AgentState:
     if not state.actions:
         logger.info("[RESPONSE] No actions to process")
         return state
-    prompt = RESPONSE_PROMPT + f"\n\n**Входные данные**:\n{json.dumps({'actions': state.actions, 'requests': state.requests, 'combine_responses': state.combine_responses}, ensure_ascii=False)}"
-    try:
-        response = await openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"}
-        )
-        result = json.loads(response.choices[0].message.content)
-        logger.info(f"[RESPONSE] OpenAI response: {json.dumps(result, indent=2, ensure_ascii=False)}")
-        state.output = {"messages": result.get("messages", []), "output": result.get("output", [])}
-        logger.info(f"[RESPONSE] Response generated: {json.dumps(state.output, indent=2, ensure_ascii=False)}")
-    except Exception as e:
-        logger.exception(f"[RESPONSE] Response agent error: {e}")
-        state.output = {
-            "messages": [{"text": "Ошибка при формировании ответа. Попробуйте снова.", "request_indices": []}],
-            "output": []
-        }
-    return state
 
+    for action in state.actions:
+        if not action.get("needs_clarification"):
+            continue
+        request = state.requests[action["request_index"]]
+        entities = request["entities"]
+        missing = request["missing"]
+        clarification_field = action["clarification_field"]
+
+        # Формируем клавиатуру в зависимости от clarification_field
+        buttons = []
+        if clarification_field == "category_code" and entities.get("chapter_code"):
+            if entities["chapter_code"] not in category_cache:
+                category_cache[entities["chapter_code"]] = await ApiClient(base_url=BACKEND_URL).get_categories(
+                    entities["chapter_code"])
+                logger.info(
+                    f"[RESPONSE] Fetched {len(category_cache[entities['chapter_code']])} categories for {entities['chapter_code']}")
+            categories = category_cache.get(entities["chapter_code"], [])
+            buttons = [
+                {"text": cat.name, "callback_data": f"CS:category_code={cat.code}"}
+                for cat in categories if cat.name
+            ]
+        elif clarification_field == "subcategory_code" and entities.get("chapter_code") and entities.get(
+                "category_code"):
+            cat_key = f"{entities['chapter_code']}/{entities['category_code']}"
+            if cat_key not in subcategory_cache:
+                subcategory_cache[cat_key] = await ApiClient(base_url=BACKEND_URL).get_subcategories(
+                    entities["chapter_code"], entities["category_code"])
+                logger.info(f"[RESPONSE] Fetched {len(subcategory_cache[cat_key])} subcategories for {cat_key}")
+            subcategories = subcategory_cache.get(cat_key, [])
+            buttons = [
+                {"text": sub.name, "callback_data": f"CS:subcategory_code={sub.code}"}
+                for sub in subcategories if sub.name
+            ]
+        else:
+            logger.warning(f"[RESPONSE] No categories found for chapter_code: {entities.get('chapter_code')}")
+            buttons = [
+                {"text": "Фастфуд", "callback_data": "CS:category_code=1"},
+                {"text": "Рестораны", "callback_data": "CS:category_code=2"},
+                {"text": "Продукты", "callback_data": "CS:category_code=3"},
+                {"text": "Доставки", "callback_data": "CS:category_code=4"},
+                {"text": "СпортПит", "callback_data": "CS:category_code=5"}
+            ]
+
+        prompt = RESPONSE_PROMPT + f"\n\n**Входные данные**:\n{json.dumps({'actions': state.actions, 'requests': state.requests, 'combine_responses': state.combine_responses, 'available_buttons': buttons}, ensure_ascii=False)}"
+        try:
+            response = await openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"}
+            )
+            result = json.loads(response.choices[0].message.content)
+            logger.info(f"[RESPONSE] OpenAI response: {json.dumps(result, indent=2, ensure_ascii=False)}")
+            messages = result.get("messages", [])
+            for msg in messages:
+                if msg.get("keyboard"):
+                    msg["keyboard"]["inline_keyboard"] = [
+                                                             buttons[i:i + 3] for i in range(0, len(buttons), 3)
+                                                         ] + [[{"text": "Отмена", "callback_data": "cancel"}]]
+            state.output = {"messages": messages, "output": result.get("output", [])}
+            logger.info(f"[RESPONSE] Response generated: {json.dumps(state.output, indent=2, ensure_ascii=False)}")
+        except Exception as e:
+            logger.exception(f"[RESPONSE] Response agent error: {e}")
+            state.output = {
+                "messages": [{"text": "Ошибка при формировании ответа. Попробуйте снова.", "request_indices": []}],
+                "output": []
+            }
+        return state
+
+    # Если нет полей для уточнения, формируем финальный вывод
+    output = []
+    for i, req in enumerate(state.requests):
+        if not req["missing"]:
+            output.append({
+                "request_index": i,
+                "entities": req["entities"]
+            })
+    if output:
+        state.output = {
+            "messages": [
+                {
+                    "text": f"Расход {req['entities']['amount']} на {req['entities'].get('category_code')} ({req['entities'].get('subcategory_code')}) записан.",
+                    "request_indices": [i]
+                } for i, req in enumerate(state.requests) if not req["missing"]
+            ],
+            "output": output
+        }
+    logger.info(f"[RESPONSE] Final output generated: {json.dumps(state.output, indent=2, ensure_ascii=False)}")
+    return state
 
 def should_continue(state: AgentState) -> str:
     """Determine whether to continue to parse_agent or proceed."""
@@ -442,13 +501,16 @@ def should_continue(state: AgentState) -> str:
     if not state.requests:
         logger.info("[CONTROL] No requests, continuing to parse_agent")
         return "parse_agent"
+    last_message = state.messages[-1] if state.messages else {}
+    if last_message.get("tool_calls"):
+        logger.info("[CONTROL] Tool calls detected, proceeding to tools_agent")
+        return "tools_agent"
     for req in state.requests:
         if not req["missing"] or ("category_code" not in req["missing"] and req["entities"].get("category_code")):
             logger.info("[CONTROL] Category code validated or no missing fields, proceeding to decision_agent")
             return "decision_agent"
     logger.info("[CONTROL] Missing fields, continuing to parse_agent")
     return "parse_agent"
-
 
 # Создаем граф
 graph = StateGraph(AgentState)
@@ -458,9 +520,10 @@ graph.add_node("metadata_agent", metadata_agent)
 graph.add_node("tools_agent", tools_agent)
 graph.add_node("response_agent", response_agent)
 graph.add_edge("__start__", "parse_agent")
-graph.add_edge("tools_agent", "parse_agent")
+graph.add_edge("tools_agent", "decision_agent")
 graph.add_conditional_edges("parse_agent", should_continue, {
     "parse_agent": "parse_agent",
+    "tools_agent": "tools_agent",
     "decision_agent": "decision_agent"
 })
 graph.add_edge("decision_agent", "metadata_agent")
@@ -469,17 +532,38 @@ graph.add_edge("response_agent", END)
 agent = graph.compile()
 
 
-async def run_agent(input_text: str, interactive: bool = False, selection: Optional[str] = None) -> Dict:
+async def run_agent(input_text: str, interactive: bool = False, selection: Optional[str] = None,
+                    prev_state: Optional[Dict] = None) -> Dict:
     """Run the agent with the given input text."""
     logger.info(f"[RUN] Running agent with input: {input_text}, interactive: {interactive}, selection: {selection}")
-    state = AgentState(
-        messages=[{"role": "user", "content": input_text}],
-        requests=[],
-        actions=[],
-        output={"messages": [], "output": []}
-    )
+    if prev_state:
+        state = AgentState(**prev_state)
+    else:
+        state = AgentState(
+            messages=[{"role": "user", "content": input_text}],
+            requests=[],
+            actions=[],
+            output={"messages": [], "output": []}
+        )
+
     if selection:
+        # Обработка выбора пользователя
+        if selection.startswith("CS:"):
+            key, value = selection.replace("CS:", "").split("=")
+            for req in state.requests:
+                req["entities"][key] = value
+                if key in req["missing"]:
+                    req["missing"].remove(key)
+                if key == "category_code" and "subcategory_code" not in req["missing"]:
+                    req["missing"].append("subcategory_code")
+        elif selection == "cancel":
+            state.output = {
+                "messages": [{"text": "Действие отменено.", "request_indices": []}],
+                "output": []
+            }
+            return state.output
         state.messages.append({"role": "user", "content": f"Selected: {selection}"})
+
     try:
         result = await agent.ainvoke(state.dict())
         logger.info(f"[RUN] Agent result: {json.dumps(result['output'], indent=2, ensure_ascii=False)}")
@@ -489,6 +573,11 @@ async def run_agent(input_text: str, interactive: bool = False, selection: Optio
                 "messages": [{"text": "Ошибка обработки результата. Попробуйте снова.", "request_indices": []}],
                 "output": []
             }
+        if interactive and result["output"]["messages"] and any(
+                "keyboard" in msg for msg in result["output"]["messages"]):
+            # Сохраняем копию состояния без циклических ссылок
+            state_copy = state.dict()  # Сериализуем состояние в словарь
+            result["output"]["state"] = state_copy
         return result["output"]
     except Exception as e:
         logger.exception(f"[RUN] Agent execution failed: {e}")

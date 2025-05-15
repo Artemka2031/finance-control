@@ -35,7 +35,7 @@ async def test_agent():
             logger.error("Skipping agent tests due to API failure")
             return
 
-        test_inputs = ["Потратил 3000 на еду вчера"]
+        test_inputs = ["Потратил 3000 на Обед в универе вчера"]
         state = None
 
         for input_text in test_inputs:
