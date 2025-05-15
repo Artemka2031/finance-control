@@ -3,13 +3,13 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, CallbackQuery
 from aiogram.filters.callback_data import CallbackData
 from ..routers.expenses.state_classes import Expense
+from ..utils.logging import configure_logger
 from ..utils.message_utils import format_operation_message
 from ..keyboards.confirm import create_confirm_keyboard
 from ..keyboards.utils import ChooseSectionCallback, ChooseCategoryCallback, ChooseSubCategoryCallback, \
     ChooseCreditorCallback
 from ..api_client import ApiClient
 from .agent import run_agent
-from .utils import configure_logger
 
 logger = configure_logger("[AGENT_ROUTER]", "yellow")
 

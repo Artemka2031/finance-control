@@ -7,7 +7,9 @@ class Expense(StatesGroup):
     category_code = State()
     subcategory_code = State()
     amount = State()
+
     coefficient = State()
+
     comment = State()
     creditor_borrow = State()
     creditor_return = State()
