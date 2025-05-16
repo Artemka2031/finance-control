@@ -1,7 +1,7 @@
 import json
+import logging
 from datetime import datetime, timedelta
-from typing import List, Dict, Optional, Any
-
+from typing import Dict, List, Any, Optional
 from langgraph.graph import StateGraph, END
 from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
@@ -245,12 +245,21 @@ async def decision_agent(state: AgentState) -> AgentState:
     return state
 
 async def metadata_agent(state: AgentState) -> AgentState:
-    """Validate entities against API."""
+    """Validate entities against API and filter metadata."""
     logger = configure_logger("[METADATA]", "magenta")
     logger.info("[METADATA] Entering metadata_agent")
     global section_cache, category_cache, subcategory_cache, creditor_cache
+
+    # Initialize filtered metadata
+    filtered_metadata = {
+        "expenses": {},
+        "date_cols": {},
+        # Include other top-level keys as needed
+    }
+
     async with ApiClient(base_url=BACKEND_URL) as api_client:
         try:
+            # Validate entities
             for i, action in enumerate(state.actions):
                 if not action.get("needs_clarification"):
                     continue
@@ -400,9 +409,58 @@ async def metadata_agent(state: AgentState) -> AgentState:
                         "output": []
                     }
                     return state
-        finally:
-            state.messages.append({"role": "assistant", "content": json.dumps({"entities_validated": state.requests})})
+
+            # Filter metadata based on validated entities
+            full_metadata = state.metadata
+            for request in state.requests:
+                if request.get("intent") == "add_expense":
+                    entities = request.get("entities", {})
+                    chapter_code = entities.get("chapter_code")
+                    category_code = entities.get("category_code")
+                    subcategory_code = entities.get("subcategory_code")
+                    date = entities.get("date")
+
+                    # Filter expenses metadata
+                    if chapter_code and chapter_code in full_metadata.get("expenses", {}):
+                        chapter_data = full_metadata["expenses"][chapter_code]
+                        filtered_metadata["expenses"][chapter_code] = {
+                            "name": chapter_data.get("name"),
+                            "row": chapter_data.get("row"),
+                            "cats": {}
+                        }
+
+                        # Filter category
+                        if category_code and category_code in chapter_data.get("cats", {}):
+                            category_data = chapter_data["cats"][category_code]
+                            filtered_metadata["expenses"][chapter_code]["cats"][category_code] = {
+                                "name": category_data.get("name"),
+                                "row": category_data.get("row"),
+                                "subs": {}
+                            }
+
+                            # Filter subcategory
+                            if subcategory_code and subcategory_code in category_data.get("subs", {}):
+                                subcategory_data = category_data["subs"][subcategory_code]
+                                filtered_metadata["expenses"][chapter_code]["cats"][category_code]["subs"][subcategory_code] = {
+                                    "name": subcategory_data.get("name"),
+                                    "row": subcategory_data.get("row")
+                                }
+
+                    # Filter date_cols
+                    if date and date in full_metadata.get("date_cols", {}):
+                        filtered_metadata["date_cols"][date] = full_metadata["date_cols"][date]
+
+            # Update state.metadata with filtered metadata
+            state.metadata = filtered_metadata
+            state.messages.append({"role": "assistant", "content": json.dumps({"entities_validated": state.requests, "metadata_filtered": filtered_metadata})})
             logger.info("[METADATA] Metadata agent completed")
+        except Exception as e:
+            logger.exception(f"[METADATA] Error in metadata_agent: {e}")
+            state.output = {
+                "messages": [{"text": "Ошибка при обработке метаданных. Попробуйте снова.", "request_indices": []}],
+                "output": []
+            }
+            return state
     return state
 
 async def tools_agent(state: AgentState) -> AgentState:

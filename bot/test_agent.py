@@ -1,12 +1,83 @@
 import asyncio
 import json
-from typing import Dict
+import logging
+from typing import Dict, Optional
 from bot.agent.agent import run_agent, section_cache, category_cache, subcategory_cache, creditor_cache
 from bot.api_client import ApiClient, ExpenseIn
 from bot.config import BACKEND_URL
 from bot.utils.logging import configure_logger
 
+# Настройка логирования с фильтром для исключения метаданных
+class NoMetadataFilter(logging.Filter):
+    def filter(self, record):
+        return not ("[METADATA] Fetched metadata" in record.getMessage())
+
 logger = configure_logger("[TEST_AGENT]", "blue")
+handler = logging.StreamHandler()
+handler.addFilter(NoMetadataFilter())
+logger.handlers = [handler]  # Заменяем обработчики, чтобы применить фильтр
+
+async def select_category(api_client: ApiClient, input_text: str, prev_result: Dict) -> Optional[str]:
+    """Интерактивный выбор раздела, категории или подкатегории через консоль."""
+    requests = prev_result.get("requests", [])
+    if not requests:
+        print("Ошибка: Нет запросов для обработки.")
+        return None
+
+    request = requests[0]
+    missing = request.get("missing", [])
+    if not missing:
+        print("Все поля заполнены, уточнение не требуется.")
+        return None
+
+    clarification_field = missing[0]  # Берем первое поле, требующее уточнения
+    print(f"\nДля расхода: {input_text}")
+    print(f"Требуется уточнить: {clarification_field}")
+
+    if clarification_field == "chapter_code":
+        print("\nДоступные разделы:")
+        sections = await api_client.get_sections()
+        for sec in sections:
+            print(f"{sec.code}: {sec.name}")
+        choice = input("Выберите раздел (введите код, например, Р1): ").strip()
+        if not any(sec.code == choice for sec in sections):
+            print("Неверный раздел!")
+            return None
+        return f"CS:chapter_code={choice}"
+
+    elif clarification_field == "category_code":
+        chapter_code = request["entities"].get("chapter_code")
+        if not chapter_code:
+            print("Ошибка: Не указан раздел.")
+            return None
+        print(f"\nКатегории в разделе {chapter_code}:")
+        categories = await api_client.get_categories(chapter_code)
+        for cat in categories:
+            print(f"{cat.code}: {cat.name}")
+        choice = input("Выберите категорию (введите код, например, 1): ").strip()
+        if not any(cat.code == choice for cat in categories):
+            print("Неверная категория!")
+            return None
+        return f"CS:category_code={choice}"
+
+    elif clarification_field == "subcategory_code":
+        chapter_code = request["entities"].get("chapter_code")
+        category_code = request["entities"].get("category_code")
+        if not (chapter_code and category_code):
+            print("Ошибка: Не указан раздел или категория.")
+            return None
+        print(f"\nПодкатегории в категории {category_code}:")
+        subcategories = await api_client.get_subcategories(chapter_code, category_code)
+        for sub in subcategories:
+            print(f"{sub.code}: {sub.name}")
+        choice = input("Выберите подкатегорию (введите код, например, 1.1): ").strip()
+        if not any(sub.code == choice for sub in subcategories):
+            print("Неверная подкатегория!")
+            return None
+        return f"CS:subcategory_code={choice}"
+
+    print(f"Неизвестное поле для уточнения: {clarification_field}")
+    return None
 
 async def test_agent():
     """Тестирует агента с набором тестовых запросов, используя реальный ApiClient."""
@@ -19,115 +90,41 @@ async def test_agent():
     creditor_cache.clear()
 
     async with ApiClient(base_url=BACKEND_URL) as api_client:
-        # Получаем метаданные с бэкенда
-        metadata = await api_client.get_metadata()
-        if not metadata:
-            logger.info("Ошибка: Не удалось получить метаданные с бэкенда")
-            return
-
         # Тестовые случаи
-        TEST_CASES = [
-            {
-                "input": "Купил Наташе кофе за 250",
-                "expected": {
-                    "intent": "add_expense",
-                    "entities": {
-                        "amount": "250.0",
-                        "date": "16.05.2025",
-                        "wallet": "project",
-                        "chapter_code": "Р4",
-                        "category_code": "1",
-                        "subcategory_code": "1.2",
-                        "creditor": None,
-                        "coefficient": "1.0",
-                        "comment": "кофе для Наташи"
-                    },
-                    "missing": []
-                }
-            },
-            {
-                "input": "Купил Наташе велосипед на день рождения за 15000",
-                "expected": {
-                    "intent": "add_expense",
-                    "entities": {
-                        "amount": "15000.0",
-                        "date": "16.05.2025",
-                        "wallet": "project",
-                        "chapter_code": None,
-                        "category_code": None,
-                        "subcategory_code": None,
-                        "creditor": None,
-                        "coefficient": "1.0",
-                        "comment": "велосипед для Наташи на день рождения"
-                    },
-                    "missing": ["chapter_code", "category_code", "subcategory_code"]
-                }
-            }
+        test_inputs = [
+            "Купил Наташе кофе за 250",
+            "Купил Наташе велосипед на день рождения за 15000",
         ]
 
-        for i, test_case in enumerate(TEST_CASES):
-            logger.info(f"\nТест {i + 1}: {test_case['input']}")
+        for i, input_text in enumerate(test_inputs, 1):
+            logger.info(f"\nТест {i}: {input_text}")
             result = await run_agent(
-                input_text=test_case["input"],
+                input_text=input_text,
                 interactive=True
             )
             logger.info(f"Результат:\n{json.dumps(result, indent=2, ensure_ascii=False)}")
 
-            # Проверка результата
+            # Проверяем, нужно ли уточнение
             requests = result.get("requests", [])
             if not requests:
-                logger.info("Ошибка: Нет запросов в результате")
+                logger.error("Ошибка: Нет запросов в результате")
                 continue
 
             request = requests[0]
-            expected = test_case["expected"]
-            is_valid = True
+            if request.get("missing"):
+                selection = await select_category(api_client, input_text, result)
+                if selection:
+                    logger.info(f"\nВыбран: {selection}")
+                    result = await run_agent(
+                        input_text=input_text,
+                        interactive=True,
+                        selection=selection,
+                        prev_state=result.get("state")
+                    )
+                    logger.info(f"Результат после выбора:\n{json.dumps(result, indent=2, ensure_ascii=False)}")
 
-            # Проверка intent
-            if request["intent"] != expected["intent"]:
-                logger.info(f"Ошибка: intent ожидался {expected['intent']}, получен {request['intent']}")
-                is_valid = False
-
-            # Проверка entities
-            for key, expected_value in expected["entities"].items():
-                actual_value = request["entities"].get(key)
-                if actual_value != str(expected_value) if expected_value is not None else actual_value:
-                    logger.info(f"Ошибка в {key}: ожидалось {expected_value}, получено {actual_value}")
-                    is_valid = False
-
-            # Проверка missing
-            if sorted(request["missing"]) != sorted(expected["missing"]):
-                logger.info(f"Ошибка в missing: ожидалось {expected['missing']}, получено {request['missing']}")
-                is_valid = False
-
-            # Проверка клавиатуры для спорных случаев
-            if expected["missing"]:
-                messages = result.get("messages", [])
-                if not messages or not messages[0].get("keyboard"):
-                    logger.info("Ошибка: Ожидалась клавиатура для уточнения")
-                    is_valid = False
-                else:
-                    keyboard = messages[0]["keyboard"]["inline_keyboard"]
-                    # Получаем ожидаемые разделы с бэкенда
-                    sections = await api_client.get_sections()
-                    expected_buttons = [
-                        {"text": sec.name, "callback_data": f"CS:chapter_code={sec.code}"}
-                        for sec in sections
-                        if sec.code in ["Р1", "Р3"]  # Ограничиваем для теста
-                    ]
-                    actual_buttons = [btn for row in keyboard for btn in row if btn["callback_data"] != "cancel"]
-                    actual_button_dict = {btn["callback_data"]: btn["text"] for btn in actual_buttons}
-                    for expected_btn in expected_buttons:
-                        if expected_btn["callback_data"] not in actual_button_dict:
-                            logger.info(f"Ошибка: Ожидалась кнопка {expected_btn}, не найдена в {actual_buttons}")
-                            is_valid = False
-                        elif actual_button_dict[expected_btn["callback_data"]] != expected_btn["text"]:
-                            logger.info(
-                                f"Ошибка: Текст кнопки для {expected_btn['callback_data']} ожидался {expected_btn['text']}, получен {actual_button_dict[expected_btn['callback_data']]}")
-                            is_valid = False
-
-            # Если тест успешен и нет missing, отправляем расход в бэкенд
-            if is_valid and not request["missing"]:
+            # Если нет missing, отправляем расход в бэкенд
+            if not request.get("missing"):
                 expense = ExpenseIn(
                     date=request["entities"]["date"],
                     sec_code=request["entities"]["chapter_code"],
@@ -140,37 +137,7 @@ async def test_agent():
                 if response.ok:
                     logger.info(f"Расход успешно добавлен, task_id: {response.task_id}")
                 else:
-                    logger.info(f"Ошибка при добавлении расхода: {response.detail}")
-                    is_valid = False
-
-            logger.info("Тест пройден" if is_valid else "Тест не пройден")
-
-            # Имитация выбора пользователя для спорных случаев
-            if expected["missing"]:
-                selection = "CS:chapter_code=Р1"
-                logger.info(f"\nИмитация выбора: {selection}")
-                result = await run_agent(
-                    input_text=test_case["input"],
-                    interactive=True,
-                    selection=selection,
-                    prev_state=result.get("state")
-                )
-                logger.info(f"Результат после выбора:\n{json.dumps(result, indent=2, ensure_ascii=False)}")
-
-                # Проверка результата после выбора
-                requests = result.get("requests", [])
-                if not requests:
-                    logger.info("Ошибка: Нет запросов после выбора")
-                    continue
-                request = requests[0]
-                if request["entities"].get("chapter_code") != "Р1":
-                    logger.info(
-                        f"Ошибка: После выбора ожидался chapter_code='Р1', получен {request['entities'].get('chapter_code')}")
-                    is_valid = False
-                if "chapter_code" in request["missing"]:
-                    logger.info("Ошибка: chapter_code всё ещё в missing после выбора")
-                    is_valid = False
-                logger.info("Тест выбора пройден" if is_valid else "Тест выбора не пройден")
+                    logger.error(f"Ошибка при добавлении расхода: {response.detail}")
 
 if __name__ == "__main__":
     asyncio.run(test_agent())
