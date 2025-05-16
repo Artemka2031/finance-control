@@ -1,4 +1,3 @@
-# finance-control/bot/api_client.py
 import os
 from typing import List, Dict, Any, Literal, Optional, Tuple
 
@@ -65,6 +64,15 @@ class ApiClient:
         if self.session is None or self.session.closed:
             self.session = aiohttp.ClientSession()
 
+    async def __aenter__(self):
+        """Вход в асинхронный контекстный менеджер."""
+        await self._ensure_session()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Выход из асинхронного контекстного менеджера."""
+        await self.close()
+
     async def close(self):
         """Закрытие сессии aiohttp."""
         if self.session and not self.session.closed:
@@ -81,9 +89,19 @@ class ApiClient:
         builder = InlineKeyboardBuilder()
         for text, _, callback in items:
             if callback:
-                builder.add(InlineKeyboardButton(text=text, callback_data=callback.pack()))
+                builder.add(
+                    InlineKeyboardButton(
+                        text=text,
+                        callback_data=callback.pack() if hasattr(callback, "pack") else callback
+                    )
+                )
         if back_button and back_callback:
-            builder.add(InlineKeyboardButton(text="<< Назад", callback_data=back_callback.pack()))
+            builder.add(
+                InlineKeyboardButton(
+                    text="<< Назад",
+                    callback_data=back_callback.pack() if hasattr(back_callback, "pack") else back_callback
+                )
+            )
         builder.adjust(adjust)
         return builder.as_markup()
 

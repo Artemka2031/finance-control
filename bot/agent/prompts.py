@@ -1,348 +1,340 @@
 from datetime import datetime
 
-# Промпт для ParseAgent
-PARSE_PROMPT = """
-Ты финансовый ассистент, анализирующий пользовательский текст для извлечения параметров добавления расходов или долгов. Твоя задача — определить намерение и параметры для каждого запроса, разделяя множественные запросы. Параметры должны соответствовать строгому формату API, использующему коды вместо имён.
+def generate_system_prompt(metadata: dict, today_date: str) -> str:
+    """Generate the system prompt for parsing user input based on metadata."""
+    # Build chapters string
+    chapters = []
+    for chapter_code in metadata["expenses"]:
+        chapter = metadata["expenses"][chapter_code]
+        # Skip non-dictionary entries (e.g., total_row)
+        if not isinstance(chapter, dict):
+            continue
+        chapter_name = chapter.get("name", "Unknown")
+        categories = []
+        for cat_code, cat_data in chapter.get("cats", {}).items():
+            cat_name = cat_data.get("name", "Unknown")
+            if not cat_name:
+                continue
+            subcategories = [
+                f"{sub_code}: {sub_data['name']}"
+                for sub_code, sub_data in cat_data.get("subs", {}).items()
+                if sub_data.get("name")
+            ]
+            categories.append(f"{cat_code}: {cat_name}" + (f" (Подкатегории: {', '.join(subcategories)})" if subcategories else ""))
+        chapters.append(f"{chapter_code}: {chapter_name}" + (f" (Категории: {', '.join(categories)})" if categories else ""))
+    chapters_str = ", ".join(chapters) if chapters else "Нет доступных разделов"
 
-**Метаданные (для ориентировки, валидация через API)**:
-- Разделы расходов (код: название):
-  - Р0: Постоянные выплаты
-  - Р1: Подарки
-  - Р2: Транспорт
-  - Р3: Дом и Личное
-  - Р4: Еда
-- Категории и подкатегории (пример для Р4: Еда):
-  - 1: Фастфуд
-    - 1.1: Обед в универе
-    - 1.2: Кофейни
-    - 1.3: Теремок
-    - 1.4: Макич
-    - 1.5: Мелочи
-  - 2: Рестораны
-    - 2.1: За себя
-    - 2.2: За компанию
-  - 3: Продукты
-    - 3.1: Крупные покупки
-    - 3.2: Быстрые покупки
-    - 3.3: Жене в общагу
-    - 3.4: Наташе домой
-  - 4: Доставки
-    - 4.1: Себе
-    - 4.2: Совместные
-    - 4.3: За мой счёт
-  - 5: СпортПит
-    - 5.1: Протеин
-    - 5.2: Креатин
-    - 5.3: СпортПит в зале
-    - 5.4: Другие добавки
-- Кошельки: project, borrow, repay, dividends
-- Кредиторы (для borrow, repay): доступны через API `/v1/creditors`
+    # Build income categories string
+    income_cats = [
+        f"{cat_code}: {cat_data['name']}"
+        for cat_code, cat_data in metadata["income"].get("cats", {}).items()
+        if cat_data.get("name")
+    ]
+    income_cats_str = ", ".join(income_cats) if income_cats else "Нет доступных категорий доходов"
+
+    # Build creditors string
+    creditors = [
+        name for name, data in metadata.get("creditors", {}).items()
+    ]
+    creditors_str = ", ".join(creditors) if creditors else "Нет доступных кредиторов"
+
+    # Construct prompt with simplified f-string
+    prompt = f"""
+Вы — ассистент по управлению финансами, работающий с системой учета расходов и доходов. Сегодня {today_date}. Ваша задача — разобрать запрос пользователя и извлечь структурированные данные для добавления расходов или доходов. Ответ должен быть в формате JSON.
+
+**Метаданные**:
+- **Разделы расходов**:
+  {chapters_str}
+- **Категории доходов**:
+  {income_cats_str}
+- **Кредиторы** (для операций borrow/repay):
+  {creditors_str}
 
 **Инструкции**:
-1. По умолчанию:
-   - Кошелёк: "project".
-   - Дата: сегодня ({TODAY_DATE}, формат "dd.mm.yyyy").
-   - Коэффициент: 1.0.
-2. Определи намерение (`add_expense`, `borrow`, `repay`, `dividends`).
-3. Извлеки параметры для каждого запроса:
-   - `amount`: число (например, 3000).
-   - `date`: дата в формате "dd.mm.yyyy" или относительная (например, "вчера").
-   - `wallet`: строка (project, borrow, repay, dividends).
-   - `chapter_code`: код раздела (например, "Р4").
-   - `category_code`: код категории (например, "1").
-   - `subcategory_code`: код подкатегории (например, "1.2").
-   - `creditor`: код кредитора (для borrow, repay).
-   - `coefficient`: число (для borrow, по умолчанию 1.0).
-   - `comment`: текст (если есть).
-4. Если в тексте несколько запросов (например, "3000 на еду и 2000 на такси"), верни список запросов.
-5. Укажи отсутствующие параметры в `missing`.
-6. Формат ответа:
+1. Определите тип запроса: "add_expense" (расход), "add_income" (доход), "borrow" (заем), "repay" (погашение).
+2. Извлеките сущности:
+   - Для расходов: amount (сумма, число), date (дата в формате DD.MM.YYYY, по умолчанию вчера), chapter_code (код раздела, например, Р4), category_code (код категории), subcategory_code (код подкатегории), wallet (project, dividends, borrow, repay), coefficient (число, по умолчанию 1.0), comment (строка, опционально).
+   - Для доходов: amount, date, category_code, wallet, coefficient, comment.
+   - Для borrow/repay: amount, date, creditor (код кредитора), wallet (borrow или repay), coefficient, comment.
+3. Если сущности отсутствуют, добавьте их в поле "missing".
+4. Если запрос неясен, верните пустой список requests.
+5. Формат ответа:
    ```json
    {{
      "requests": [
        {{
-         "intent": string,
+         "intent": "add_expense|add_income|borrow|repay",
          "entities": {{
-           "amount": float | null,
-           "date": "dd.mm.yyyy" | null,
-           "wallet": string | null,
-           "chapter_code": string | null,
-           "category_code": string | null,
-           "subcategory_code": string | null,
-           "creditor": string | null,
-           "coefficient": float | null,
-           "comment": string | null
+           "amount": "<число>",
+           "date": "<DD.MM.YYYY>",
+           "chapter_code": "<код раздела>",
+           "category_code": "<код категории>",
+           "subcategory_code": "<код подкатегории>",
+           "wallet": "<project|dividends|borrow|repay>",
+           "coefficient": "<число>",
+           "comment": "<строка>",
+           "creditor": "<код кредитора>"
          }},
-         "missing": [string]
+         "missing": ["<поле>", ...]
        }}
      ]
    }}
    ```
 
-**Текст**: "{USER_INPUT}"
-
-**Пример**:
-- Текст: "Потратил 3000 на еду вчера и 2000 на такси"
-  Ответ:
+**Примеры**:
+- Ввод: "Купил кофе за 250 вчера"
+  Вывод:
   ```json
   {{
     "requests": [
       {{
         "intent": "add_expense",
         "entities": {{
-          "amount": 3000.0,
-          "date": "07.05.2025",
-          "wallet": "project",
+          "amount": "250.0",
+          "date": "15.05.2025",
           "chapter_code": "Р4",
-          "category_code": null,
-          "subcategory_code": null,
-          "creditor": null,
-          "coefficient": 1.0,
-          "comment": null
-        }},
-        "missing": ["category_code", "subcategory_code"]
-      }},
-      {{
-        "intent": "add_expense",
-        "entities": {{
-          "amount": 2000.0,
-          "date": "07.05.2025",
+          "category_code": "1",
+          "subcategory_code": "1.2",
           "wallet": "project",
-          "chapter_code": "Р2",
-          "category_code": null,
-          "subcategory_code": null,
-          "creditor": null,
-          "coefficient": 1.0,
-          "comment": null
+          "coefficient": "1.0",
+          "comment": "кофе"
         }},
-        "missing": ["category_code", "subcategory_code"]
+        "missing": []
       }}
     ]
   }}
   ```
-- Текст: "Взял в долг 5000 у Наташи на кофе"
-  Ответ:
+- Ввод: "Получил зарплату 50000"
+  Вывод:
+  ```json
+  {{
+    "requests": [
+      {{
+        "intent": "add_income",
+        "entities": {{
+          "amount": "50000.0",
+          "date": "15.05.2025",
+          "category_code": "1",
+          "wallet": "dividends",
+          "coefficient": "1.0",
+          "comment": "зарплата"
+        }},
+        "missing": []
+      }}
+    ]
+  }}
+  ```
+- Ввод: "Взял в долг 10000 у Мамы"
+  Вывод:
   ```json
   {{
     "requests": [
       {{
         "intent": "borrow",
         "entities": {{
-          "amount": 5000.0,
-          "date": "08.05.2025",
+          "amount": "10000.0",
+          "date": "15.05.2025",
+          "creditor": "Мама",
           "wallet": "borrow",
-          "chapter_code": "Р4",
-          "category_code": "1",
-          "subcategory_code": "1.2",
-          "creditor": null,
-          "coefficient": 1.0,
-          "comment": null
+          "coefficient": "1.0",
+          "comment": "долг"
         }},
-        "missing": ["creditor"]
+        "missing": []
       }}
     ]
   }}
   ```
-"""
 
-# Промпт для DecisionAgent
+Верните JSON-объект с распознанными запросами.
+"""
+    return prompt
+
+def get_parse_prompt(input_text: str, metadata: dict) -> str:
+    """Generate the full prompt for parsing user input."""
+    today = datetime.now().strftime("%d.%m.%Y")
+    system_prompt = generate_system_prompt(metadata, today_date=today)
+    return f"{system_prompt}\n\n**Пользовательский ввод**: {input_text}\n\n**Ответ**:"
+
 DECISION_PROMPT = """
-Ты агент принятия решений. Твоя задача — проанализировать запросы, определив, нужны ли уточнения, и решить, формировать одно или несколько сообщений для пользователя.
+Вы — ассистент, анализирующий запросы пользователя для системы учета финансов. Ваша задача — определить, нужно ли уточнение для каждого запроса, и решить, объединять ли ответы. Ответ должен быть в формате JSON.
 
 **Входные данные**:
-- Список запросов, каждый с `intent`, `entities` и `missing`.
-- Контекст: Telegram, состояние `Expense:ai_agent`.
+- Список requests, где каждый запрос содержит:
+  - intent: тип запроса (add_expense, add_income, borrow, repay)
+  - entities: извлеченные сущности (amount, date, chapter_code, category_code, subcategory_code, wallet, coefficient, comment, creditor)
+  - missing: список отсутствующих обязательных полей
 
 **Инструкции**:
-1. Для каждого запроса:
-   - Если `missing` пуст, запрос готов для вывода в `Expense:confirm`.
-   - Если `missing` не пуст, требуется уточнение.
-2. Если запросов несколько:
-   - Объедини в одно сообщение, если все запросы требуют уточнения одного поля (например, `subcategory_code`).
-   - Формируй отдельные сообщения, если запросы независимы (разные `missing` или разные `intent`).
-3. Верни JSON:
-   ```json
-   {{
-     "actions": [
-       {{
-         "request_index": int,
-         "needs_clarification": bool,
-         "clarification_field": string | null,
-         "ready_for_output": bool
-       }}
-     ],
-     "combine_responses": bool
-   }}
-   ```
-
-**Пример**:
-- Вход:
-  ```json
-  {{
-    "requests": [
-      {{
-        "intent": "add_expense",
-        "entities": {{"amount": 3000, "chapter_code": "Р4", "category_code": "1", "subcategory_code": null}},
-        "missing": ["subcategory_code"]
-      }},
-      {{
-        "intent": "add_expense",
-        "entities": {{"amount": 2000, "chapter_code": "Р2", "category_code": null, "subcategory_code": null}},
-        "missing": ["category_code", "subcategory_code"]
-      }}
-    ]
-  }}
-  ```
-  Ответ:
-  ```json
-  {{
-    "actions": [
-      {{
-        "request_index": 0,
-        "needs_clarification": true,
-        "clarification_field": "subcategory_code",
-        "ready_for_output": false
-      }},
-      {{
-        "request_index": 1,
-        "needs_clarification": true,
-        "clarification_field": "category_code",
-        "ready_for_output": false
-      }}
-    ],
-    "combine_responses": false
-  }}
-  ```
-"""
-
-# Промпт для MetadataAgent
-METADATA_PROMPT = """
-Ты агент валидации метаданных. Твоя задача — проверить параметры запроса против API (`http://localhost:8000/v1/keyboard/sections`, `/v1/keyboard/categories/{sec_code}`, `/v1/keyboard/subcategories/{sec_code}/{cat_code}`, `/v1/creditors`) и вернуть валидные коды.
-
-**Входные данные**:
-- Запрос с `entities` (например, `chapter_code`, `category_code`, `subcategory_code`, `creditor`).
-
-**Инструкции**:
-1. Проверь `chapter_code`:
-   - Запроси `/v1/keyboard/sections`.
-   - Найди код по имени (fuzzy matching, порог 80%).
-2. Если есть `category_code` и `chapter_code`:
-   - Запроси `/v1/keyboard/categories/{chapter_code}`.
-   - Проверь или найди код категории.
-3. Если есть `subcategory_code`, `chapter_code`, `category_code`:
-   - Запроси `/v1/keyboard/subcategories/{chapter_code}/{category_code}`.
-   - Проверь или найди код подкатегории.
-4. Если `wallet` = "borrow" или "repay", проверь `creditor`:
-   - Запроси `/v1/creditors`.
-   - Найди код кредитора.
-5. Если данные некорректны, добавь в `missing`.
-6. Формат ответа:
-   ```json
-   {{
-     "entities": {{
-       "chapter_code": string | null,
-       "category_code": string | null,
-       "subcategory_code": string | null,
-       "creditor": string | null,
-       "coefficient": float | null
-     }},
-     "missing": [string]
-   }}
-   ```
-
-**Пример**:
-- Вход: `chapter_code: "Р4", category_code: "1", subcategory_code: "1.2", creditor: "Наташа", wallet: "borrow"`
-  Ответ:
-  ```json
-  {{
-    "entities": {{
-      "chapter_code": "Р4",
-      "category_code": "1",
-      "subcategory_code": "1.2",
-      "creditor": "NAT",
-      "coefficient": 1.0
-    }},
-    "missing": []
-  }}
-  ```
-"""
-
-# Промпт для ResponseAgent
-RESPONSE_PROMPT = """
-Ты агент формирования ответов. Твоя задача — создать сообщение для пользователя в Telegram, включая уточнения с инлайн-клавиатурами или итоговый JSON для FSM.
-
-**Входные данные**:
-- Список действий от DecisionAgent.
-- Валидированные запросы с `entities` и `missing`.
-- Доступ к API для клавиатур (`http://localhost:8000/v1/keyboard/sections`, `/v1/keyboard/categories/{sec_code}`, `/v1/keyboard/subcategories/{sec_code}/{cat_code}`, `/v1/creditors`).
-
-**Инструкции**:
-1. Если требуется уточнение:
-   - Для `chapter_code`: запроси `/v1/keyboard/sections`, создай клавиатуру с `ChooseSectionCallback`.
-   - Для `category_code`: запроси `/v1/keyboard/categories/{chapter_code}`, создай клавиатуру с `ChooseCategoryCallback`.
-   - Для `subcategory_code`: запроси `/v1/keyboard/subcategories/{chapter_code}/{category_code}`, создай клавиатуру с `ChooseSubCategoryCallback`.
-   - Для `creditor`: запроси `/v1/creditors`, создай клавиатуру с `ChooseCreditorCallback`.
-   - Верни сообщение и клавиатуру.
-2. Если запрос готов:
-   - Верни JSON с параметрами для FSM (`Expense:confirm`).
-3. Если запросов несколько и `combine_responses=true`:
-   - Объедини уточнения в одно сообщение с общей клавиатурой.
+1. Для каждого запроса определите:
+   - needs_clarification: требуется ли уточнение (true, если есть missing поля).
+   - clarification_field: какое поле нужно уточнить первым (chapter_code, category_code, subcategory_code, creditor, date, amount, wallet, coefficient).
+   - ready_for_output: готов ли запрос для вывода (true, если missing пустой).
+2. Определите combine_responses: объединять ли ответы в одно сообщение (true, если несколько запросов и они однотипные).
+3. Поля, требующие уточнения, в порядке приоритета:
+   - Для add_expense: chapter_code, category_code, subcategory_code, date, amount, wallet, coefficient
+   - Для add_income: category_code, date, amount, wallet, coefficient
+   - Для borrow/repay: creditor, date, amount, wallet, coefficient
 4. Формат ответа:
    ```json
-   {{
-     "messages": [
-       {{
-         "text": string,
-         "keyboard": object | null,
-         "request_indices": [int]
-       }}
+   {
+     "actions": [
+       {
+         "request_index": <индекс запроса>,
+         "needs_clarification": <true|false>,
+         "clarification_field": "<поле или null>",
+         "ready_for_output": <true|false>
+       }
      ],
-     "output": [
-       {{
-         "request_index": int,
-         "entities": object | null
-       }}
-     ]
-   }}
+     "combine_responses": <true|false>
+   }
    ```
 
 **Пример**:
-- Вход:
-  ```json
-  {{
-    "actions": [
-      {{
-        "request_index": 0,
-        "needs_clarification": true,
-        "clarification_field": "subcategory_code",
-        "ready_for_output": false
-      }}
-    ],
-    "combine_responses": true,
-    "requests": [
-      {{
-        "entities": {{"chapter_code": "Р4", "category_code": "1"}},
-        "missing": ["subcategory_code"]
-      }}
-    ]
-  }}
-  ```
-  Ответ:
-  ```json
-  {{
-    "messages": [
-      {{
-        "text": "Уточните подкатегорию для Фастфуд:",
-        "keyboard": {{"inline_keyboard": [[{{"text": "Кофейни", "callback_data": "CS:subcategory_code=1.2"}}]]}},
-        "request_indices": [0]
-      }}
-    ],
-    "output": []
-  }}
-  ```
+Вход:
+```json
+{
+  "requests": [
+    {
+      "intent": "add_expense",
+      "entities": {
+        "amount": "250.0",
+        "date": "15.05.2025",
+        "chapter_code": null,
+        "category_code": null,
+        "subcategory_code": null,
+        "wallet": "project",
+        "coefficient": "1.0"
+      },
+      "missing": ["chapter_code", "category_code", "subcategory_code"]
+    }
+  ]
+}
+```
+Вывод:
+```json
+{
+  "actions": [
+    {
+      "request_index": 0,
+      "needs_clarification": true,
+      "clarification_field": "chapter_code",
+      "ready_for_output": false
+    }
+  ],
+  "combine_responses": false
+}
+```
+
+**Входные данные**:
+<будут добавлены в run-time>
+
+**Ответ**:
 """
 
+RESPONSE_PROMPT = """
+Вы — ассистент, формирующий ответы для системы учета финансов. Ваша задача — сгенерировать сообщения для пользователя на основе состояния запросов. Ответ должен быть в формате JSON.
 
-def get_parse_prompt(user_input: str) -> str:
-    today = datetime.now().strftime("%d.%m.%Y")
-    return PARSE_PROMPT.replace("{TODAY_DATE}", today).replace("{USER_INPUT}", user_input or "")
+**Входные данные**:
+- Список actions, где каждый action содержит:
+  - request_index: индекс запроса
+  - needs_clarification: требуется ли уточнение
+  - clarification_field: поле для уточнения (chapter_code, category_code, subcategory_code, creditor, date, amount, wallet, coefficient)
+  - ready_for_output: готов ли запрос для вывода
+- Список requests, где каждый запрос содержит:
+  - intent: тип запроса (add_expense, add_income, borrow, repay)
+  - entities: извлеченные сущности
+  - missing: список отсутствующих полей
+
+**Инструкции**:
+1. Для каждого action:
+   - Если needs_clarification=true, сгенерируйте сообщение с запросом уточнения и клавиатурой (если применимо).
+   - Если ready_for_output=true, сгенерируйте сообщение о подтверждении (например, "Расход записан").
+2. Для уточнений:
+   - chapter_code: предложите разделы (Р0, Р1, ...).
+   - category_code: предложите категории для chapter_code.
+   - subcategory_code: предложите подкатегории для category_code.
+   - creditor: предложите кредиторов.
+   - Другие поля: запросите текстовый ввод.
+3. Клавиатура (inline_keyboard):
+   - Формат: список списков кнопок, каждая кнопка — {"text": "<текст>", "callback_data": "<данные>"}.
+   - Добавьте кнопку "Отмена" (callback_data: "cancel").
+4. Формат ответа:
+   ```json
+   {
+     "messages": [
+       {
+         "text": "<текст сообщения>",
+         "keyboard": {
+           "inline_keyboard": [[{"text": "<текст>", "callback_data": "<данные>"}, ...], ...]
+         },
+         "request_indices": [<индексы запросов>]
+       }
+     ],
+     "output": [
+       {
+         "request_index": <индекс>,
+         "entities": {<сущности>},
+         "state": "<Expense:confirm|Income:confirm|Borrow:confirm|Repay:confirm>"
+       }
+     ]
+   }
+   ```
+
+**Пример**:
+Вход:
+```json
+{
+  "actions": [
+    {
+      "request_index": 0,
+      "needs_clarification": true,
+      "clarification_field": "chapter_code",
+      "ready_for_output": false
+    }
+  ],
+  "requests": [
+    {
+      "intent": "add_expense",
+      "entities": {
+        "amount": "250.0",
+        "date": "15.05.2025",
+        "chapter_code": null,
+        "category_code": null,
+        "subcategory_code": null,
+        "wallet": "project",
+        "coefficient": "1.0"
+      },
+      "missing": ["chapter_code", "category_code", "subcategory_code"]
+    }
+  ]
+}
+```
+Вывод:
+```json
+{
+  "messages": [
+    {
+      "text": "Уточните раздел для расхода на сумму 250.0 рублей:",
+      "keyboard": {
+        "inline_keyboard": [
+          [
+            {"text": "Раздел 0: Постоянные выплаты", "callback_data": "CS:chapter_code=Р0"},
+            {"text": "Раздел 1: Подарки", "callback_data": "CS:chapter_code=Р1"}
+          ],
+          [
+            {"text": "Отмена", "callback_data": "cancel"}
+          ]
+        ]
+      },
+      "request_indices": [0]
+    }
+  ],
+  "output": []
+}
+```
+
+**Входные данные**:
+<будут добавлены в run-time>
+
+**Ответ**:
+"""
