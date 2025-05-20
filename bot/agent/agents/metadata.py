@@ -4,8 +4,7 @@ from datetime import datetime, timedelta
 
 from ...api_client import ApiClient
 from ..config import BACKEND_URL
-from ..utils import AgentState, agent_logger, section_cache, category_cache, subcategory_cache, creditor_cache, \
-    fuzzy_match
+from ..utils import AgentState, agent_logger, section_cache, category_cache, subcategory_cache, fuzzy_match
 
 
 async def metadata_agent(state: AgentState) -> AgentState:
@@ -53,8 +52,14 @@ async def metadata_agent(state: AgentState) -> AgentState:
                                 if "chapter_code" in missing:
                                     missing.remove("chapter_code")
                             else:
-                                missing.append("chapter_code")
-                                entities["chapter_code"] = None
+                                match, score = fuzzy_match(entities["chapter_code"], section_names)
+                                if score > 0.9:
+                                    entities["chapter_code"] = section_codes[match]
+                                    if "chapter_code" in missing:
+                                        missing.remove("chapter_code")
+                                else:
+                                    missing.append("chapter_code")
+                                    entities["chapter_code"] = None
 
                     # Validate category_code
                     if ("category_code" in missing or entities.get("category_code")) and entities.get("chapter_code"):
@@ -97,8 +102,8 @@ async def metadata_agent(state: AgentState) -> AgentState:
                             "chapter_code") and entities.get("category_code"):
                         cat_key = f"{entities['chapter_code']}/{entities['category_code']}"
                         if cat_key not in subcategory_cache:
-                            subcategory_cache[cat_key] = await api_client.get_subcategories(entities["chapter_code"],
-                                                                                            entities["category_code"])
+                            subcategory_cache[cat_key] = await api_client.get_subcategories(
+                                entities["chapter_code"], entities["category_code"])
                             if not subcategory_cache[cat_key]:
                                 agent_logger.warning(f"[METADATA] No subcategories for {cat_key}")
                             agent_logger.info(
@@ -122,26 +127,6 @@ async def metadata_agent(state: AgentState) -> AgentState:
                                     missing.append("subcategory_code")
                                     entities["subcategory_code"] = None
 
-                    # Validate creditor
-                    if ("creditor" in missing or entities.get("creditor")) and entities.get("wallet") in ["borrow",
-                                                                                                          "repay"]:
-                        if not creditor_cache:
-                            creditor_cache.extend(await api_client.get_creditors())
-                            agent_logger.info(f"[METADATA] Fetched {len(creditor_cache)} creditors")
-                            agent_logger.debug(
-                                f"[METADATA] Fetched creditors: {[{'code': cred.code, 'name': cred.name} for cred in creditor_cache]}")
-                        creditor_names = [cred.name for cred in creditor_cache]
-                        creditor_codes = {cred.name: cred.code for cred in creditor_cache}
-                        if entities.get("creditor"):
-                            match, score = fuzzy_match(entities["creditor"], creditor_names)
-                            if score > 0.9:
-                                entities["creditor"] = creditor_codes[match]
-                                if "creditor" in missing:
-                                    missing.remove("creditor")
-                            else:
-                                missing.append("creditor")
-                                entities["creditor"] = None
-
                     # Validate date
                     if not entities.get("date"):
                         entities["date"] = datetime.now().strftime("%d.%m.%Y")
@@ -151,6 +136,8 @@ async def metadata_agent(state: AgentState) -> AgentState:
                                 entities["date"] = (datetime.now() - timedelta(days=2)).strftime("%d.%m.%Y")
                             elif entities["date"].lower() == "вчера":
                                 entities["date"] = (datetime.now() - timedelta(days=1)).strftime("%d.%m.%Y")
+                            elif entities["date"].lower() == "сегодня":
+                                entities["date"] = datetime.now().strftime("%d.%m.%Y")
                             else:
                                 datetime.strptime(entities["date"], "%d.%m.%Y")
                         except ValueError:

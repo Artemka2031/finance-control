@@ -152,10 +152,19 @@ class SheetNumeric:
 
     def _cell(self, row: int, col: int) -> float:
         """Возвращает числовое значение ячейки, а не формулу."""
-        raw_value = self.matrix.get((row, col), "")
+        log.debug(f"Accessing cell at row={row}, col={col}")
+
+        # Check if row and col are within matrix bounds
+        if not (0 <= row < len(self.matrix) and 0 <= col < len(self.matrix[0])):
+            log.warning(
+                f"Cell access out of bounds: row={row}, col={col}, matrix_size=({len(self.matrix)}, {len(self.matrix[0])})")
+            return 0.0
+
+        raw_value = self.matrix[row][col]
         if not raw_value:
             return 0.0
-        if raw_value.startswith("="):
+
+        if isinstance(raw_value, str) and raw_value.startswith("="):
             # Извлекаем значения из формулы и вычисляем сумму
             formula = raw_value.lstrip("=")
             parts = formula.split("+")
@@ -167,7 +176,8 @@ class SheetNumeric:
                 except ValueError:
                     continue
             return total
-        return to_float(raw_value)
+
+        return float(raw_value) if raw_value else 0.0
 
     async def _roll(self, col: int, level: Literal["section", "category", "subcategory"], zero_suppress: bool = False,
                     include_comments: bool = False) -> Dict[str, Dict[str, Any]]:

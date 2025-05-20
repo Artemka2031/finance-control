@@ -4,10 +4,10 @@ from typing import Dict, Optional
 
 from langgraph.graph import StateGraph, END
 
-from .agents import parse_agent, decision_agent, metadata_agent, tools_agent, response_agent
+from .agents import parse_agent, decision_agent, metadata_agent, response_agent
 from .config import BACKEND_URL
 from .utils import AgentState, agent_logger
-from ..api_client import ApiClient, ExpenseIn
+from ..api_client import ApiClient
 from ..utils.message_utils import format_operation_message
 
 
@@ -24,13 +24,10 @@ class Agent:
         graph.add_node("parse_agent", parse_agent)
         graph.add_node("decision_agent", decision_agent)
         graph.add_node("metadata_agent", metadata_agent)
-        graph.add_node("tools_agent", tools_agent)
         graph.add_node("response_agent", response_agent)
         graph.add_edge("__start__", "parse_agent")
-        graph.add_edge("tools_agent", "decision_agent")
         graph.add_conditional_edges("parse_agent", self._should_continue, {
             "parse_agent": "parse_agent",
-            "tools_agent": "tools_agent",
             "decision_agent": "decision_agent"
         })
         graph.add_edge("decision_agent", "metadata_agent")
@@ -49,10 +46,7 @@ class Agent:
                 if request.get("missing"):
                     agent_logger.info("[CONTROL] Missing fields detected, proceeding to decision_agent")
                     return "decision_agent"
-        if state.messages[-1].get("tool_calls"):
-            agent_logger.info("[CONTROL] Tool calls detected, proceeding to tools_agent")
-            return "tools_agent"
-        agent_logger.info("[CONTROL] No missing fields or tool calls, proceeding to decision_agent")
+        agent_logger.info("[CONTROL] No missing fields, proceeding to decision_agent")
         return "decision_agent"
 
     async def run(self, input_text: str, interactive: bool = False, selection: Optional[str] = None,
@@ -119,7 +113,7 @@ class Agent:
 
     async def process_request(self, input_text: str, interactive: bool = False, selection: Optional[str] = None,
                               prev_state: Optional[Dict] = None) -> Dict:
-        """Process user request and handle expense submission."""
+        """Process user request and prepare output."""
         agent_logger.info(
             f"[PROCESS] Processing request: {input_text}, interactive: {interactive}, selection: {selection}")
 
@@ -133,15 +127,15 @@ class Agent:
         agent_logger.info(f"[PROCESS] Agent result")
         agent_logger.debug(f"[PROCESS] Agent result: {json.dumps(result, indent=2, ensure_ascii=False)}")
 
-        requests = result.get("requests", [])
-        if not requests and not result.get("messages"):
+        # Check if result is valid
+        if not result.get("messages") and not result.get("output"):
             agent_logger.error("[PROCESS] No requests or messages in result")
             return {
                 "messages": [{"text": "Ошибка: Нет запросов для обработки.", "request_indices": []}],
                 "output": []
             }
 
-        # Форматируем итоговый результат для лога
+        # Format result for logging
         formatted_result = []
         for output in result.get("output", []):
             formatted_message = await format_operation_message(output.get("entities", {}), self.api_client)
@@ -153,43 +147,5 @@ class Agent:
             f"User request: {input_text}\n"
             f"Response:\n{formatted_result_str}"
         )
-
-        if result.get("messages"):
-            return result
-
-        request = requests[0]
-        if not request.get("missing") and result.get("output"):
-            expense = ExpenseIn(
-                date=request["entities"]["date"],
-                sec_code=request["entities"]["chapter_code"],
-                cat_code=request["entities"]["category_code"],
-                sub_code=request["entities"]["subcategory_code"],
-                amount=float(request["entities"]["amount"]),
-                comment=request["entities"].get("comment", "")
-            )
-            response = await self.api_client.add_expense(expense)
-            if response.ok:
-                agent_logger.info(f"[PROCESS] Expense added, task_id: {response.task_id}")
-                formatted_message = await format_operation_message(request["entities"], self.api_client)
-                return {
-                    "messages": [{
-                        "text": f"{formatted_message}\n\nПодтвердите операцию:",
-                        "keyboard": None,
-                        "request_indices": [0]
-                    }],
-                    "output": [{
-                        "request_index": 0,
-                        "entities": request["entities"],
-                        "state": "Expense:confirm",
-                        "task_id": response.task_id
-                    }],
-                    "state": result.get("state")
-                }
-            else:
-                agent_logger.error(f"[PROCESS] Failed to add expense: {response.detail}")
-                return {
-                    "messages": [{"text": f"Ошибка при добавлении расхода: {response.detail}", "request_indices": []}],
-                    "output": []
-                }
 
         return result

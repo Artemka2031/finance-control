@@ -7,25 +7,28 @@ from datetime import datetime
 from peewee import DoesNotExist
 
 from .operations import Operations
+
 from ..core.config import log
 from .task_storage import Task
 
 
 class TaskManager:
     def __init__(self, service):
+        log.info("Initializing TaskManager")
         self.service = service
         self.task_queue = asyncio.PriorityQueue()
         self.sheet_lock = asyncio.Lock()
         self.cache_update_timer = None
         self.last_post_time = None
-        self.cache_update_interval = 30  # секунд
-        self._processing_task = None  # Для отслеживания фоновой задачи
+        self.cache_update_interval = 30  # seconds
+        self._processing_task = None  # Tracks background task
 
     async def queue_task(self, task_type: str, payload: Dict[str, Any], user_id: str) -> str:
         async with self.service._init_lock:
             if not self.service._initialized:
                 await self.service.initialize()
-        task_id = str(uuid.uuid4())
+        # Generate a 16-character task_id from UUID4 to fit Telegram callback data limit (64 bytes)
+        task_id = str(uuid.uuid4())[:13]
         priority = 1 if "remove" not in task_type else 2
         task = Task.create(
             task_id=task_id,
@@ -39,11 +42,11 @@ class TaskManager:
         await self.task_queue.put((priority, task_id))
         log.info(f"Queued task {task_id} of type {task_type} for user {user_id}")
 
-        # Запускаем обработку задач в фоне, если она ещё не запущена
+        # Start background task processing if not already running
         if self._processing_task is None or self._processing_task.done():
             self._processing_task = asyncio.create_task(self.process_tasks())
 
-        # Обновляем время последнего POST-запроса и планируем обновление кэша
+        # Update last POST time and schedule cache update
         self.last_post_time = datetime.now()
         self._schedule_cache_update()
 
@@ -65,7 +68,7 @@ class TaskManager:
         while True:
             try:
                 priority, task_id = await self.task_queue.get()
-                # Запускаем обработку каждой задачи в отдельной корутине
+                # Process each task in a separate coroutine
                 asyncio.create_task(self._process_single_task(operations, task_id))
             except asyncio.CancelledError:
                 log.info("Task processing cancelled")
@@ -86,7 +89,6 @@ class TaskManager:
         task.save()
 
         try:
-            # Используем sheet_lock для последовательного доступа к Google Sheets
             async with self.sheet_lock:
                 payload = json.loads(task.payload)
                 result = await operations.execute_task(task.task_type, payload)
@@ -94,11 +96,6 @@ class TaskManager:
                 task.result = json.dumps(result)
                 task.save()
                 log.info(f"Task {task.task_id} completed successfully")
-        except Exception as e:
-            task.status = "failed"
-            task.result = json.dumps({"error": str(e)})
-            task.save()
-            log.error(f"Task {task.task_id} failed: {str(e)}")
         finally:
             self.task_queue.task_done()
 

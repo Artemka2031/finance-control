@@ -171,14 +171,29 @@ class Operations:
             original_payload = json.loads(task.payload)
             original_task_type = task.task_type
 
-            expected_add_task = task_type.replace("remove_", "add_")
-            if original_task_type != expected_add_task:
+            # Define valid original task types for each remove operation
+            valid_original_tasks = {
+                "remove_expense": "add_expense",
+                "remove_income": "add_income",
+                "remove_borrowing": "record_borrowing",
+                "remove_repayment": "record_repayment",
+                "remove_saving": "record_saving",
+            }
+
+            expected_task_type = valid_original_tasks.get(task_type)
+            if not expected_task_type:
+                raise ValueError(f"Unknown remove task type: {task_type}")
+
+            if original_task_type != expected_task_type:
                 raise ValueError(
-                    f"Cannot remove: task {task_id} is of type {original_task_type}, expected {expected_add_task}")
+                    f"Cannot remove: task {task_id} is of type {original_task_type}, expected {expected_task_type}"
+                )
 
             payload = original_payload
 
         date = payload.get("date")
+        if not date:
+            raise ValueError("Date is required in payload")
         col = self.service.meta.meta["date_cols"].get(date)
         if not col:
             raise ValueError(f"Date {date} not found in metadata")
@@ -189,6 +204,9 @@ class Operations:
             sub_code = payload.get("sub_code")
             amount = payload.get("amount")
             comment = payload.get("comment")
+
+            if not all([sec_code, cat_code, sub_code, amount]):
+                raise ValueError("Missing required fields: sec_code, cat_code, sub_code, amount")
 
             section = self.service.meta.meta["expenses"].get(sec_code)
             if not section:
@@ -209,7 +227,9 @@ class Operations:
             cat_code = payload.get("cat_code")
             sub_code = payload.get("sub_code")
             amount = payload.get("amount")
-            comment = payload.get("comment")
+
+            if not all([sec_code, cat_code, sub_code, amount]):
+                raise ValueError("Missing required fields: sec_code, cat_code, sub_code, amount")
 
             section = self.service.meta.meta["expenses"].get(sec_code)
             if not section:
@@ -230,6 +250,9 @@ class Operations:
             amount = payload.get("amount")
             comment = payload.get("comment")
 
+            if not all([cat_code, amount]):
+                raise ValueError("Missing required fields: cat_code, amount")
+
             category = self.service.meta.meta["income"].get("cats", {}).get(cat_code)
             if not category:
                 raise ValueError(f"Category {cat_code} not found")
@@ -241,7 +264,9 @@ class Operations:
         elif task_type == "remove_income":
             cat_code = payload.get("cat_code")
             amount = payload.get("amount")
-            comment = payload.get("comment")
+
+            if not all([cat_code, amount]):
+                raise ValueError("Missing required fields: cat_code, amount")
 
             category = self.service.meta.meta["income"].get("cats", {}).get(cat_code)
             if not category:
@@ -256,11 +281,14 @@ class Operations:
             amount = payload.get("amount")
             comment = payload.get("comment")
 
+            if not all([cred_code, amount]):
+                raise ValueError("Missing required fields: cred_code, amount")
+
             creditor = self.service.meta.meta["creditors"].get(cred_code)
             if not creditor:
                 raise ValueError(f"Creditor {cred_code} not found")
 
-            row = creditor["base"] + 4
+            row = creditor["base"] + 1
             current_balance = self.service.numeric._cell(row, col)
             new_balance = current_balance + amount
             await self._write_cell(row, col, new_balance, comment, operation="add")
@@ -269,13 +297,15 @@ class Operations:
         elif task_type == "remove_borrowing":
             cred_code = payload.get("cred_code")
             amount = payload.get("amount")
-            comment = payload.get("comment")
+
+            if not all([cred_code, amount]):
+                raise ValueError("Missing required fields: cred_code, amount")
 
             creditor = self.service.meta.meta["creditors"].get(cred_code)
             if not creditor:
                 raise ValueError(f"Creditor {cred_code} not found")
 
-            row = creditor["base"] + 4
+            row = creditor["base"] + 1
             await self._write_cell(row, col, amount, None, operation="remove")
             return {"status": "success", "message": f"Borrowing removed for {date}"}
 
@@ -284,26 +314,31 @@ class Operations:
             amount = payload.get("amount")
             comment = payload.get("comment")
 
+            if not all([cred_code, amount]):
+                raise ValueError("Missing required fields: cred_code, amount")
+
             creditor = self.service.meta.meta["creditors"].get(cred_code)
             if not creditor:
                 raise ValueError(f"Creditor {cred_code} not found")
 
-            row = creditor["base"] + 4
+            row = creditor["base"] + 2
             current_balance = self.service.numeric._cell(row, col)
-            new_balance = current_balance - amount
+            new_balance = current_balance + amount
             await self._write_cell(row, col, new_balance, comment, operation="add")
             return {"status": "success", "message": f"Repayment recorded for {date}"}
 
         elif task_type == "remove_repayment":
             cred_code = payload.get("cred_code")
             amount = payload.get("amount")
-            comment = payload.get("comment")
+
+            if not all([cred_code, amount]):
+                raise ValueError("Missing required fields: cred_code, amount")
 
             creditor = self.service.meta.meta["creditors"].get(cred_code)
             if not creditor:
                 raise ValueError(f"Creditor {cred_code} not found")
 
-            row = creditor["base"] + 4
+            row = creditor["base"] + 2
             await self._write_cell(row, col, amount, None, operation="remove")
             return {"status": "success", "message": f"Repayment removed for {date}"}
 
@@ -312,11 +347,14 @@ class Operations:
             amount = payload.get("amount")
             comment = payload.get("comment")
 
+            if not all([cred_code, amount]):
+                raise ValueError("Missing required fields: cred_code, amount")
+
             creditor = self.service.meta.meta["creditors"].get(cred_code)
             if not creditor:
                 raise ValueError(f"Creditor {cred_code} not found")
 
-            row = creditor["base"] + 4
+            row = creditor["base"] + 3
             current_balance = self.service.numeric._cell(row, col)
             new_balance = current_balance + amount
             await self._write_cell(row, col, new_balance, comment, operation="add")
@@ -325,13 +363,15 @@ class Operations:
         elif task_type == "remove_saving":
             cred_code = payload.get("cred_code")
             amount = payload.get("amount")
-            comment = payload.get("comment")
+
+            if not all([cred_code, amount]):
+                raise ValueError("Missing required fields: cred_code, amount")
 
             creditor = self.service.meta.meta["creditors"].get(cred_code)
             if not creditor:
                 raise ValueError(f"Creditor {cred_code} not found")
 
-            row = creditor["base"] + 4
+            row = creditor["base"] + 3
             await self._write_cell(row, col, amount, None, operation="remove")
             return {"status": "success", "message": f"Saving removed for {date}"}
 

@@ -14,22 +14,23 @@ async def decision_agent(state: AgentState) -> AgentState:
     prompt = DECISION_PROMPT + f"\n\n**Входные данные**:\n{json.dumps({'requests': state.requests}, ensure_ascii=False)}"
     try:
         response = await openai_client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-4.1-mini",
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"}
         )
         result = json.loads(response.choices[0].message.content)
         agent_logger.info("[DECISION] Received OpenAI response")
         agent_logger.debug(f"[DECISION] OpenAI response: {json.dumps(result, indent=2, ensure_ascii=False)}")
-        state.actions = [
-            {
-                "request_index": action.get("request_index", 0),
-                "needs_clarification": action.get("needs_clarification", False),
-                "clarification_field": action.get("clarification_field"),
-                "ready_for_output": action.get("ready_for_output", False)
-            }
-            for action in result.get("actions", [])
-        ]
+        state.actions = []
+        for i, req in enumerate(state.requests):
+            action = result.get("actions", [{}])[i] if i < len(result.get("actions", [])) else {}
+            state.actions.append({
+                "request_index": i,
+                "needs_clarification": action.get("needs_clarification", bool(req.get("missing", []))),
+                "clarification_field": action.get("clarification_field",
+                                                  req.get("missing", [None])[0] if req.get("missing") else None),
+                "ready_for_output": action.get("ready_for_output", not bool(req.get("missing", [])))
+            })
         state.combine_responses = result.get("combine_responses", False)
         state.messages.append({"role": "assistant", "content": json.dumps(state.actions)})
         agent_logger.info(

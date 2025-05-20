@@ -174,7 +174,7 @@ def create_confirm_router(bot: Bot, api_client: ApiClient):
                 coefficient = data.get("coefficient", 1.0)
                 creditor = data.get("creditor")
                 creditor_name = data.get("creditor_name", creditor)
-                borrowing_amount = round(amount * coefficient)
+                borrowing_amount = amount
                 saving_amount = round(amount * (1 - coefficient)) if coefficient != 1 else 0
                 expense = ExpenseIn(
                     date=date,

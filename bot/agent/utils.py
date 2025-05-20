@@ -37,14 +37,14 @@ def setup_logging():
     logger.remove()  # Remove default handler
     logger.add(
         sink="logs/agent.log",
-        level="DEBUG",
+        level="DEBUG",  # Changed from WARNING to DEBUG
         format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {name} | {message}",
         rotation="10 MB",
         filter=lambda record: not ("[METADATA] Fetched metadata" in record["message"])
     )
     logger.add(
         sink=lambda msg: print(msg, end=""),
-        level="INFO",
+        level="DEBUG",  # Changed from INFO to DEBUG for console
         colorize=True,
         format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level}</level> | <cyan>{name}</cyan> | <level>{message}</level>"
     )
@@ -78,49 +78,6 @@ class AgentState(BaseModel):
     parse_iterations: int = Field(default=0)
     metadata: Optional[Dict] = Field(default=None)
 
-
-# Tools
-async def validate_category(category_name: str, chapter_code: str) -> Dict[str, Any]:
-    """Validate category name against API and return category code."""
-    agent_logger.info(f"[VALIDATE] Validating category: {category_name}, chapter: {chapter_code}")
-    async with ApiClient(base_url=BACKEND_URL) as api_client:
-        try:
-            categories = category_cache.get(chapter_code)
-            if not categories:
-                agent_logger.debug(f"[VALIDATE] Fetching categories for chapter_code: {chapter_code}")
-                categories = await api_client.get_categories(chapter_code)
-                if not categories:
-                    agent_logger.error(f"[VALIDATE] No categories found for chapter_code: {chapter_code}")
-                    return {"category_code": None, "success": False, "error": "No categories available"}
-                category_cache[chapter_code] = categories
-            category_names = [cat.name for cat in categories]
-            match, score = fuzzy_match(category_name, category_names)
-            if score > 0.9:
-                result = {"category_code": next(cat.code for cat in categories if cat.name == match), "success": True}
-                agent_logger.info(f"[VALIDATE] Validation result: {result}")
-                return result
-            result = {"category_code": None, "success": False}
-            agent_logger.info(f"[VALIDATE] Validation result: {result}")
-            return result
-        except Exception as e:
-            agent_logger.exception(f"[VALIDATE] Error in validate_category: {e}")
-            return {"category_code": None, "success": False, "error": str(e)}
-
-
-tools = [
-    {
-        "name": "validate_category",
-        "description": "Validate a category name against the API for a given chapter code.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "category_name": {"type": "string", "description": "Name of the category to validate"},
-                "chapter_code": {"type": "string", "description": "Chapter code (e.g., P4)"}
-            },
-            "required": ["category_name", "chapter_code"]
-        }
-    }
-]
 
 def fuzzy_match(query: str, choices: list) -> Tuple[Optional[str], float]:
     """Perform fuzzy matching of query against choices."""
