@@ -1,59 +1,73 @@
-# Bot/routers/income/income_router.py
 from aiogram import Router, F, Bot
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
-from ..income.amount_router import create_amount_router
-# from ..income.category_router import create_category_router
-from ..income.comment_router import create_comment_router
-from ..income.date_router import create_date_router
-from ..income.state_classes import Income
+from .amount_router import create_amount_router
+from .category_router import create_category_router
+from .comment_router import create_comment_router
+from .confirm_router import create_confirm_router
+from .date_router import create_date_router
+from .state_income import Income
+from ..delete_router import create_delete_router
 from ...api_client import ApiClient
 from ...keyboards.today import create_today_keyboard
-from ...utils.message_utils import delete_messages_after, track_message
+from ...utils.logging import configure_logger
+from ...utils.message_utils import track_messages, delete_message, delete_tracked_messages, delete_key_messages
 
+logger = configure_logger("[INCOMES]", "yellow")
 
 def create_income_router(bot: Bot, api_client: ApiClient):
     income_router = Router()
 
     @income_router.message(Command("add_income"))
     @income_router.message(F.text.casefold() == "приход ₽")
-    @delete_messages_after
-    @track_message
-    async def start_income_adding(message: Message, state: FSMContext) -> None:
+    @track_messages
+    async def start_income_adding(message: Message, state: FSMContext, bot: Bot) -> Message:
+        # Удаляем все отслеживаемые сообщения предыдущей операции
+        await delete_tracked_messages(bot, state, message.chat.id)
+        await delete_key_messages(bot, state, message.chat.id)
+        await state.update_data(messages_to_delete=[])
         await state.clear()
-        sent_message = await message.answer(
-            text="Выберите дату прихода:",
+        # Проверяем, что messages_to_delete пустой
+        data = await state.get_data()
+        if data.get("messages_to_delete", []):
+            logger.warning(f"messages_to_delete не очищен: {data['messages_to_delete']}")
+            await state.update_data(messages_to_delete=[])
+        # Удаляем сообщение пользователя
+        await delete_message(bot, message.chat.id, message.message_id)
+        sent_message = await bot.send_message(
+            chat_id=message.chat.id,
+            text="Выберите дату дохода: 🗓️",
             reply_markup=create_today_keyboard()
         )
-        await state.update_data(date_message_id=sent_message.message_id)
         await state.set_state(Income.date)
+        return sent_message
 
     @income_router.message(Command("cancel_income"))
-    @income_router.message(F.text.casefold() == "отмена прихода")
-    @delete_messages_after
-    async def cancel_income_adding(message: Message, state: FSMContext) -> None:
-        chat_id = message.chat.id
-        data = await state.get_data()
-        await message.delete()
-
-        fields_to_check = ["date_message_id", "category_message_id", "amount_message_id", "comment_message_id"]
-        delete_messages = [data[field] for field in fields_to_check if field in data]
-
-        extra_messages = data.get("extra_messages", [])
-        delete_messages.extend(extra_messages)
-
-        for message_id in delete_messages:
-            await bot.delete_message(chat_id=chat_id, message_id=message_id)
-
-        await message.answer(text="Добавление прихода отменено")
+    @income_router.message(F.text.casefold() == "отмена дохода")
+    @track_messages
+    async def cancel_income_adding(message: Message, state: FSMContext, bot: Bot) -> Message:
+        # Удаляем сообщение пользователя
+        await delete_message(bot, message.chat.id, message.message_id)
+        # Удаляем все отслеживаемые сообщения
+        await delete_tracked_messages(bot, state, message.chat.id)
+        # Удаляем ключевые сообщения
+        await delete_key_messages(bot, state, message.chat.id)
+        await state.update_data(messages_to_delete=[])
         await state.clear()
+        sent_message = await bot.send_message(
+            chat_id=message.chat.id,
+            text="Добавление дохода отменено 🚫"
+        )
+        return sent_message
 
     # Include sub-routers
     income_router.include_router(create_date_router(bot, api_client))
-    # income_router.include_router(create_category_router(bot, api_client))
+    income_router.include_router(create_category_router(bot, api_client))
     income_router.include_router(create_amount_router(bot, api_client))
     income_router.include_router(create_comment_router(bot, api_client))
+    income_router.include_router(create_confirm_router(bot, api_client))
+    income_router.include_router(create_delete_router(bot, api_client))
 
     return income_router

@@ -8,9 +8,9 @@ from .category_router import create_category_router
 from .comment_router import create_comment_router
 from .confirm_router import create_confirm_router
 from .date_router import create_date_router
-from .delete_router import create_delete_router
 from .state_classes import Expense
 from .wallet_router import create_wallet_router
+from ..delete_router import create_delete_router
 from ...api_client import ApiClient
 from ...keyboards.today import create_today_keyboard
 from ...utils.logging import configure_logger

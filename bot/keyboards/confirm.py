@@ -1,13 +1,19 @@
-# Bot/keyboards/confirm.py
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-from bot.keyboards.utils import ConfirmOperationCallback
+from .utils import ConfirmOperationCallback
 
 
 def create_confirm_keyboard() -> InlineKeyboardMarkup:
-    items = [
-        ("Подтвердить", "confirm", ConfirmOperationCallback(confirm=True)),
-        ("Отмена", "cancel", ConfirmOperationCallback(confirm=False))
+    buttons = [
+        [
+            InlineKeyboardButton(
+                text="Подтвердить ✅",
+                callback_data=ConfirmOperationCallback(confirm=True).pack()
+            ),
+            InlineKeyboardButton(
+                text="Отменить 🚫",
+                callback_data=ConfirmOperationCallback(confirm=False).pack()
+            )
+        ]
     ]
-    buttons = [[InlineKeyboardButton(text=text, callback_data=callback.pack()) for text, _, callback in items]]
     return InlineKeyboardMarkup(inline_keyboard=buttons)

@@ -1,12 +1,11 @@
-# Bot/agent/agents/parse.py
 import json
 from datetime import datetime
 from typing import Dict
 
-from ...api_client import ApiClient
 from ..config import BACKEND_URL
 from ..prompts import get_parse_prompt
 from ..utils import AgentState, openai_client, agent_logger
+from ...api_client import ApiClient
 
 
 async def fetch_metadata() -> Dict:
@@ -22,25 +21,31 @@ async def fetch_metadata() -> Dict:
             return {}
 
 
-async def validate_entities(entities: Dict, metadata: Dict) -> list[str]:
+async def validate_entities(entities: Dict, metadata: Dict, intent: str) -> list[str]:
     """Validate entities against metadata and return missing or invalid fields."""
     missing = []
     chapter_code = entities.get("chapter_code")
     category_code = entities.get("category_code")
     subcategory_code = entities.get("subcategory_code")
+    creditor = entities.get("creditor")
 
-    if not chapter_code or chapter_code not in metadata.get("expenses", {}):
-        missing.append("chapter_code")
-    elif category_code and category_code not in metadata.get("expenses", {}).get(chapter_code, {}).get("cats", {}):
-        missing.append("category_code")
-    elif subcategory_code and subcategory_code not in metadata.get("expenses", {}).get(chapter_code, {}).get("cats",
-                                                                                                             {}).get(
-            category_code, {}).get("subs", {}):
-        missing.append("subcategory_code")
-    elif not category_code:
-        missing.append("category_code")
-    elif not subcategory_code:
-        missing.append("subcategory_code")
+    if intent in ["add_expense", "borrow"]:
+        if not chapter_code or chapter_code not in metadata.get("expenses", {}):
+            missing.append("chapter_code")
+        elif category_code and category_code not in metadata.get("expenses", {}).get(chapter_code, {}).get("cats", {}):
+            missing.append("category_code")
+        elif subcategory_code and subcategory_code not in metadata.get("expenses", {}).get(chapter_code, {}).get("cats",
+                                                                                                                 {}).get(
+                category_code, {}).get("subs", {}):
+            missing.append("subcategory_code")
+        elif not category_code:
+            missing.append("category_code")
+        elif not subcategory_code:
+            missing.append("subcategory_code")
+
+    if intent in ["borrow", "repay"]:
+        if not creditor or creditor not in metadata.get("creditors", {}):
+            missing.append("creditor")
 
     if not entities.get("amount") or float(entities.get("amount", 0)) <= 0:
         missing.append("amount")
@@ -48,9 +53,10 @@ async def validate_entities(entities: Dict, metadata: Dict) -> list[str]:
         missing.append("date")
     if not entities.get("wallet"):
         missing.append("wallet")
+    if intent == "borrow" and (not entities.get("coefficient") or float(entities.get("coefficient", 1.0)) <= 0):
+        missing.append("coefficient")
 
     return missing
-
 
 async def parse_agent(state: AgentState) -> AgentState:
     """Parse user input to extract requests using LLM."""
@@ -99,20 +105,24 @@ async def parse_agent(state: AgentState) -> AgentState:
         state.requests = []
         requests = result.get("requests", [])
         for i, req in enumerate(requests):
-            if req.get("intent") != "add_expense":
+            if req.get("intent") not in ["add_expense", "borrow", "repay"]:
                 continue
             entities = req.get("entities", {})
             entities["input_text"] = input_text
-            entities.setdefault("wallet", "project")
+            entities.setdefault("wallet",
+                                {"add_expense": "project", "borrow": "borrow", "repay": "repay"}.get(req["intent"],
+                                                                                                     "project"))
             entities.setdefault("coefficient", "1.0")
             entities.setdefault("date", datetime.now().strftime("%d.%m.%Y"))
-            entities.setdefault("comment", "Расход")
+            entities.setdefault("comment", "Операция")
+            entities.setdefault("creditor", "")
 
-            missing = await validate_entities(entities, state.metadata)
+            missing = await validate_entities(entities, state.metadata, req["intent"])
             state.requests.append({
-                "intent": "add_expense",
+                "intent": req["intent"],
                 "entities": entities,
-                "missing": missing
+                "missing": missing,
+                "index": i
             })
 
         state.messages.append({"role": "assistant", "content": json.dumps(state.requests)})

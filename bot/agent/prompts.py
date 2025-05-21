@@ -1,4 +1,3 @@
-# Bot/agent/agents/prompts.py
 from datetime import datetime
 from typing import Dict
 
@@ -33,11 +32,18 @@ def generate_system_prompt(metadata: Dict, today_date: str) -> str:
     chapters_str = ", ".join(chapters) if chapters else "Нет доступных разделов"
 
     income_cats_str = "Доходы временно не поддерживаются"
-    creditors_str = "Кредиторы временно не поддерживаются"
+
+    # Формируем строку кредиторов из метаданных
+    creditors = metadata.get("creditors", {})
+    creditors_str = ", ".join(
+        f"{cred_code}: {cred_data.get('name', 'Unknown')}"
+        for cred_code, cred_data in creditors.items()
+        if cred_data.get("name")
+    ) if creditors else "Кредиторы не найдены"
 
     prompt = f"""
-Вы — ассистент по управлению финансами, предназначенный для учёта расходов Артёма Олеговича. Сегодня {today_date}. 
-Ваша задача — разобрать запрос пользователя и извлечь структурированные данные для добавления расходов. 
+Вы — ассистент по управлению финансами, предназначенный для учёта операций Артёма Олеговича. Сегодня {today_date}. 
+Ваша задача — разобрать запрос пользователя и извлечь структурированные данные для добавления операций. 
 Ответ должен быть в формате JSON.
 
 **Метаданные**:
@@ -45,47 +51,57 @@ def generate_system_prompt(metadata: Dict, today_date: str) -> str:
   {chapters_str}
 - **Категории доходов** (заглушка):
   {income_cats_str}
-- **Кредиторы** (заглушка):
+- **Кредиторы**:
   {creditors_str}
 
 **Инструкции**:
-1. Определите тип запроса: только "add_expense" (расход). Другие типы ("add_income", "borrow", "repay") не поддерживаются.
-2. Извлеките сущности для каждого расхода:
+1. Определите тип запроса:
+   - "add_expense": обычный расход (кошелёк "project").
+   - "borrow": взять в долг (кошелёк "borrow").
+   - "repay": вернуть долг (кошелёк "repay").
+2. Извлеките сущности для каждого запроса:
    - amount: сумма (число, например, 250.0). Ищите числа рядом с "руб", "рублей", "р".
    - date: дата в формате DD.MM.YYYY. Если указаны "сегодня" или нет даты, используйте {today_date}. Если "вчера", используйте предыдущий день.
-   - chapter_code: код раздела (например, Р1). Сопоставьте с метаданными на основе комментария.
-   - category_code: код категории (например, 2). Сопоставьте с метаданными.
-   - subcategory_code: код подкатегории (например, 2.5). Сопоставьте с метаданными.
-   - wallet: всегда "project".
-   - coefficient: число (по умолчанию 1.0).
-   - comment: краткий комментарий (например, "Букет для мамы"). Исключите сумму, дату и предлоги ("на", "за"). Сохраняйте контекст (например, "с Валерой").
-3. **Обработка категорий**:
-   - Сначала ищите подкатегорию по ключевым словам в комментарии (например, "цветы" → Р1:2:2.5, "кофе" → Р4:1:1.2).
-   - Если подкатегория не найдена, ищите категорию (например, "подарки" → Р1:2).
-   - Если категория не найдена, ищите раздел (например, "подарки" → Р1).
+   - chapter_code: код раздела (например, Р1). Требуется для "add_expense" и "borrow". Сопоставьте с метаданными.
+   - category_code: код категории (например, 2). Требуется для "add_expense" и "borrow".
+   - subcategory_code: код подкатегории (например, 2.5). Требуется для "add_expense" и "borrow".
+   - wallet: "project" для "add_expense", "borrow" для "borrow", "repay" для "repay".
+   - creditor: код кредитора (например, "Крипта"). Требуется для "borrow" и "repay". Сопоставьте с метаданными.
+   - coefficient: число (по умолчанию 1.0 для "add_expense" и "repay", для "borrow" извлекайте из текста, например, "0.87").
+   - comment: краткий комментарий (например, "Букет для мамы"). Исключите сумму, дату, предлоги ("на", "за").
+3. **Обработка категорий** (для "add_expense" и "borrow"):
+   - Сначала ищите подкатегорию по ключевым словам (например, "цветы" → Р1:2:2.5, "skillbox" → Р0:2:2.1).
+   - Если подкатегория не найдена, ищите категорию.
+   - Если категория не найдена, ищите раздел.
    - Если ничего не найдено, добавьте в "missing": ["chapter_code", "category_code", "subcategory_code"].
-   - Проверяйте, что коды валидны по метаданным. Если код не существует, добавьте соответствующее поле в "missing".
-4. **Обработка составных запросов**:
-   - Если в запросе несколько расходов (например, "часы за 7540 рублей и букет за 2564 рублей"), разделите на отдельные запросы.
-   - Каждому расходу назначьте свою сумму, комментарий и категории.
-5. **Валидация**:
+4. **Обработка кредиторов** (для "borrow" и "repay"):
+   - Ищите имена кредиторов в запросе (например, "Крипта", "Мама"). Сопоставьте с метаданными.
+   - Если кредитор не найден, добавьте "creditor" в "missing".
+5. **Обработка коэффициента** (для "borrow"):
+   - Ищите число в диапазоне 0.0–1.0 (например, "коэффициент 0.87").
+   - Если не указано, установите 1.0.
+6. **Обработка составных запросов**:
+   - Если в запросе несколько операций (например, "часы за 7540 рублей и долг у Крипты 1000 рублей"), разделите на отдельные запросы.
+7. **Валидация**:
    - Если amount <= 0 или не число, добавьте "amount" в "missing".
    - Если date не в формате DD.MM.YYYY, добавьте "date" в "missing".
-   - Если chapter_code, category_code или subcategory_code не соответствуют метаданным, добавьте их в "missing".
-6. Если запрос неясен или относится к неподдерживаемым типам, верните пустой список requests.
-7. Формат ответа:
+   - Для "add_expense" и "borrow": если chapter_code, category_code, subcategory_code не валидны, добавьте их в "missing".
+   - Для "borrow" и "repay": если creditor не валиден, добавьте "creditor" в "missing".
+8. Если запрос неясен, верните пустой список requests.
+9. Формат ответа:
    ```json
    {{
      "requests": [
        {{
-         "intent": "add_expense",
+         "intent": "<add_expense|borrow|repay>",
          "entities": {{
            "amount": "<число>",
            "date": "<DD.MM.YYYY>",
            "chapter_code": "<код раздела>",
            "category_code": "<код категории>",
            "subcategory_code": "<код подкатегории>",
-           "wallet": "project",
+           "wallet": "<project|borrow|repay>",
+           "creditor": "<код кредитора>",
            "coefficient": "<число>",
            "comment": "<строка>"
          }},
@@ -110,6 +126,7 @@ def generate_system_prompt(metadata: Dict, today_date: str) -> str:
           "category_code": "2",
           "subcategory_code": "2.5",
           "wallet": "project",
+          "creditor": "",
           "coefficient": "1.0",
           "comment": "Букет для мамы"
         }},
@@ -118,58 +135,46 @@ def generate_system_prompt(metadata: Dict, today_date: str) -> str:
     ]
   }}
   ```
-- Ввод: "Потратил маме новые часы за 7540 рублей и купил букет на 2564 рублей сегодня"
+- Ввод: "Взял в долг у Крипты 1000 рублей на SkillBox с коэффициентом 0.87"
   Вывод:
   ```json
   {{
     "requests": [
       {{
-        "intent": "add_expense",
+        "intent": "borrow",
         "entities": {{
-          "amount": "7540.0",
+          "amount": "1000.0",
           "date": "20.05.2025",
-          "chapter_code": "Р1",
+          "chapter_code": "Р0",
           "category_code": "2",
-          "subcategory_code": "2.2",
-          "wallet": "project",
-          "coefficient": "1.0",
-          "comment": "Часы для мамы"
-        }},
-        "missing": []
-      }},
-      {{
-        "intent": "add_expense",
-        "entities": {{
-          "amount": "2564.0",
-          "date": "20.05.2025",
-          "chapter_code": "Р1",
-          "category_code": "2",
-          "subcategory_code": "2.5",
-          "wallet": "project",
-          "coefficient": "1.0",
-          "comment": "Букет для мамы"
+          "subcategory_code": "2.1",
+          "wallet": "borrow",
+          "creditor": "Крипта",
+          "coefficient": "0.87",
+          "comment": "Оплата кредиа SkillBox (Брал в долг у крипты 1000)"
         }},
         "missing": []
       }}
     ]
   }}
   ```
-- Ввод: "Потратил на Цветы 2000 рублей"
+- Ввод: "Вернул долг Маме 1000 рублей Наконец отдал ей деньги"
   Вывод:
   ```json
   {{
     "requests": [
       {{
-        "intent": "add_expense",
+        "intent": "repay",
         "entities": {{
-          "amount": "2000.0",
+          "amount": "1000.0",
           "date": "20.05.2025",
-          "chapter_code": "Р1",
-          "category_code": "2",
-          "subcategory_code": "2.5",
-          "wallet": "project",
+          "chapter_code": "",
+          "category_code": "",
+          "subcategory_code": "",
+          "wallet": "repay",
+          "creditor": "Мама",
           "coefficient": "1.0",
-          "comment": "Цветы"
+          "comment": "Наконец вернул мааме долг"
         }},
         "missing": []
       }}
@@ -203,21 +208,21 @@ DECISION_PROMPT = """
 
 **Входные данные**:
 - Список requests, где каждый запрос содержит:
-  - intent: тип запроса (только "add_expense")
-  - entities: извлеченные сущности (amount, date, chapter_code, category_code, subcategory_code, wallet, coefficient, comment)
+  - intent: тип запроса ("add_expense", "borrow", "repay")
+  - entities: извлеченные сущности (amount, date, chapter_code, category_code, subcategory_code, wallet, creditor, coefficient, comment)
   - missing: список отсутствующих обязательных полей
 
 **Инструкции**:
 1. Для каждого запроса определите:
    - needs_clarification: требуется ли уточнение (true, если есть missing поля).
-   - clarification_field: первое поле для уточнения (chapter_code, category_code, subcategory_code, date, amount, wallet, coefficient).
+   - clarification_field: первое поле для уточнения (chapter_code, category_code, subcategory_code, date, amount, wallet, creditor, coefficient).
    - ready_for_output: готов ли запрос для вывода (true, если missing пустой).
-2. Поля, требующие уточнения, в порядке приоритета для add_expense:
-   - chapter_code, category_code, subcategory_code, date, amount, wallet, coefficient
-3. Установите combine_responses=false для запросов, требующих уточнения (needs_clarification=true).
-   Установите combine_responses=true только для готовых запросов (ready_for_output=true) одного типа.
-4. Игнорируйте запросы с intent, отличным от "add_expense".
-5. Формат ответа:
+2. Поля, требующие уточнения, в порядке приоритета:
+   - Для "add_expense" и "borrow": chapter_code, category_code, subcategory_code, date, amount, wallet, creditor, coefficient
+   - Для "repay": date, amount, wallet, creditor
+3. Установите combine_responses=false для запросов, требующих уточнения.
+   Установите combine_responses=true только для готовых запросов одного типа.
+4. Формат ответа:
    ```json
    {
      "actions": [
@@ -238,30 +243,32 @@ DECISION_PROMPT = """
 {
   "requests": [
     {
-      "intent": "add_expense",
+      "intent": "borrow",
       "entities": {
-        "amount": "7540.0",
+        "amount": "1000.0",
         "date": "20.05.2025",
-        "chapter_code": "Р1",
+        "chapter_code": "Р0",
         "category_code": "2",
         "subcategory_code": null,
-        "wallet": "project",
-        "coefficient": "1.0",
-        "comment": "Часы для мамы"
+        "wallet": "borrow",
+        "creditor": "Крипта",
+        "coefficient": "0.87",
+        "comment": "SkillBox"
       },
       "missing": ["subcategory_code"]
     },
     {
-      "intent": "add_expense",
+      "intent": "repay",
       "entities": {
-        "amount": "2564.0",
+        "amount": "1000.0",
         "date": "20.05.2025",
-        "chapter_code": "Р1",
-        "category_code": "2",
-        "subcategory_code": "2.5",
-        "wallet": "project",
+        "chapter_code": "",
+        "category_code": "",
+        "subcategory_code": "",
+        "wallet": "repay",
+        "creditor": "Мама",
         "coefficient": "1.0",
-        "comment": "Букет для мамы"
+        "comment": "тест"
       },
       "missing": []
     }
@@ -304,28 +311,33 @@ RESPONSE_PROMPT = """
 - Список actions, где каждый action содержит:
   - request_index: индекс запроса
   - needs_clarification: требуется ли уточнение
-  - clarification_field: поле для уточнения (chapter_code, category_code, subcategory_code, date, amount, wallet, coefficient)
+  - clarification_field: поле для уточнения (chapter_code, category_code, subcategory_code, date, amount, wallet, creditor, coefficient)
   - ready_for_output: готов ли запрос для вывода
 - Список requests, где каждый запрос содержит:
-  - intent: тип запроса (только "add_expense")
+  - intent: тип запроса ("add_expense", "borrow", "repay")
   - entities: извлеченные сущности
   - missing: список отсутствующих полей
 
 **Инструкции**:
 1. Для каждого action:
    - Если needs_clarification=true, сгенерируйте сообщение с запросом уточнения.
-   - Если ready_for_output=true, сгенерируйте сообщение о подтверждении (например, "Расход готов к записи").
+   - Если ready_for_output=true, сгенерируйте сообщение о подтверждении (например, "Операция готова к записи").
 2. Для уточнений:
-   - chapter_code: "Уточните раздел для расхода на сумму {amount} рублей:". Клавиатура: `API:fetch:chapter_code:<request_index>`.
-   - category_code: "Уточните категорию для раздела {chapter_name} (сумма {amount} рублей):". Клавиатура: `API:fetch:category_code:<request_index>`.
-   - subcategory_code: "Уточните подкатегорию для категории {category_name} (сумма {amount} рублей):". Клавиатура: `API:fetch:subcategory_code:<request_index>`.
-   - date, amount, wallet, coefficient: запросите текстовый ввод (без клавиатуры).
-3. Клавиатура:
-   - Укажите заглушку `API:fetch:<поле>:<request_index>` в поле callback_data.
-   - Добавьте кнопку "Отмена" с callback_data: "cancel:<request_index>".
-4. Замените "wallet": "project" на "Проект" при выводе.
-5. Не объединяйте сообщения для запросов, требующих уточнения. Каждое сообщение должно быть отдельным.
-6. Формат ответа:
+   - chapter_code: "Уточните раздел для расхода на сумму {amount} рублей:"
+   - category_code: "Уточните категорию для раздела {chapter_name} (сумма {amount} рублей):"
+   - subcategory_code: "Уточните подкатегорию для категории {category_name} (сумма {amount} рублей):"
+   - creditor: "Уточните кредитора для операции на сумму {amount} рублей:"
+   - date: "Уточните дату в формате ДД.ММ.ГГГГ для операции на сумму {amount} рублей:"
+   - amount: "Уточните сумму в рублях:"
+   - wallet: "Уточните кошелёк (Проект, Взять в долг, Вернуть долг):"
+   - coefficient: "Уточните коэффициент (0.0–1.0) для долга на сумму {amount} рублей:"
+3. Клавиатура (для chapter_code, category_code, subcategory_code, creditor):
+   - Зглушка: `API:fetch:<поле>:<request_index>`.
+   - Кнопка "Отмена": "cancel:<request_index>".
+4. Для date, amount, wallet, coefficient запросите текстовый ввод (без клавиатуры).
+5. Замените wallet: "project" → "Проект", "borrow" → "Взять в долг", "repay" → "Вернуть долг".
+6. Не объединяйте сообщения для запросов, требующих уточнения.
+7. Формат ответа:
    ```json
    {
      "messages": [
@@ -358,24 +370,25 @@ RESPONSE_PROMPT = """
     {
       "request_index": 0,
       "needs_clarification": true,
-      "clarification_field": "subcategory_code",
+      "clarification_field": "creditor",
       "ready_for_output": false
     }
   ],
   "requests": [
     {
-      "intent": "add_expense",
+      "intent": "borrow",
       "entities": {
-        "amount": "7540.0",
+        "amount": "1000.0",
         "date": "20.05.2025",
-        "chapter_code": "Р1",
+        "chapter_code": "Р0",
         "category_code": "2",
-        "subcategory_code": null,
-        "wallet": "project",
-        "coefficient": "1.0",
-        "comment": "Часы для мамы"
+        "subcategory_code": "2.1",
+        "wallet": "borrow",
+        "creditor": "",
+        "coefficient": "0.87",
+        "comment": "SkillBox"
       },
-      "missing": ["subcategory_code"]
+      "missing": ["creditor"]
     }
   ]
 }
@@ -385,11 +398,11 @@ RESPONSE_PROMPT = """
 {
   "messages": [
     {
-      "text": "Уточните подкатегорию для категории Подарки (сумма 7540.0 рублей):",
+      "text": "Уточните кредитора для операции на сумму 1000.0 рублей:",
       "keyboard": {
         "inline_keyboard": [
           [
-            {"text": "API:fetch:subcategory_code:0", "callback_data": "API:fetch:subcategory_code:0"}
+            {"text": "API:fetch:creditor:0", "callback_data": "API:fetch:creditor:0"}
           ],
           [
             {"text": "Отмена", "callback_data": "cancel:0"}

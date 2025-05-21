@@ -1,8 +1,9 @@
-# Bot/agent/agents/serialization.py
-from typing import Dict, List, Optional
+from typing import Dict, List
+
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from ...api_client import ApiClient
+
 from ..utils import agent_logger
+from ...api_client import ApiClient
 from ...utils.message_utils import format_operation_message
 
 
@@ -23,8 +24,7 @@ List[Dict]:
         elif field == "category_code" and entities.get("chapter_code"):
             categories = await api_client.get_categories(entities["chapter_code"])
             valid_codes = {
-                cat_code for cat_code in metadata.get("expenses", {})
-                .get(entities["chapter_code"], {}).get("cats", {})
+                cat_code for cat_code in metadata.get("expenses", {}).get(entities["chapter_code"], {}).get("cats", {})
                 if metadata["expenses"][entities["chapter_code"]]["cats"][cat_code].get("name")
             }
             items = [
@@ -34,9 +34,9 @@ List[Dict]:
         elif field == "subcategory_code" and entities.get("chapter_code") and entities.get("category_code"):
             subcategories = await api_client.get_subcategories(entities["chapter_code"], entities["category_code"])
             valid_codes = {
-                sub_code for sub_code in metadata.get("expenses", {})
-                .get(entities["chapter_code"], {}).get("cats", {})
-                .get(entities["category_code"], {}).get("subs", {})
+                sub_code for sub_code in
+                metadata.get("expenses", {}).get(entities["chapter_code"], {}).get("cats", {}).get(
+                    entities["category_code"], {}).get("subs", {})
                 if
                 metadata["expenses"][entities["chapter_code"]]["cats"][entities["category_code"]]["subs"][sub_code].get(
                     "name")
@@ -45,7 +45,12 @@ List[Dict]:
                 {"text": subcategory.name, "callback_data": f"CS:subcategory_code={subcategory.code}:{request_index}"}
                 for subcategory in subcategories if subcategory.name and subcategory.code in valid_codes
             ]
-        agent_logger.debug(f"[SERIALIZE] Fetched {len(items)} items for field {field}: {items}")
+        elif field == "creditor":
+            creditors = await api_client.get_creditors()
+            items = [
+                {"text": creditor.name, "callback_data": f"CS:creditor={creditor.code}:{request_index}"}
+                for creditor in creditors if creditor.name
+            ]
     except Exception as e:
         agent_logger.exception(f"[SERIALIZE] Error fetching keyboard items for field {field}: {e}")
     if not items:
@@ -67,10 +72,7 @@ List[Dict]:
             continue
 
         inline_keyboard = keyboard_data.get("inline_keyboard", [])
-        if any(
-                any(btn.get("callback_data", "").startswith("API:fetch:") for btn in row)
-                for row in inline_keyboard
-        ):
+        if any(any(btn.get("callback_data", "").startswith("API:fetch:") for btn in row) for row in inline_keyboard):
             request_index = message["request_indices"][0]
             for row in inline_keyboard:
                 for btn in row:
@@ -88,9 +90,8 @@ List[Dict]:
                 items = await fetch_keyboard_items(api_client, field, entities, request_index, metadata)
                 if items:
                     keyboard = {
-                        "inline_keyboard": [
-                                               items[i:i + 3] for i in range(0, len(items), 3)
-                                           ] + [[{"text": "Отмена", "callback_data": f"cancel:{request_index}"}]]
+                        "inline_keyboard": [items[i:i + 3] for i in range(0, len(items), 3)] + [
+                            [{"text": "Отмена", "callback_data": f"cancel:{request_index}"}]]
                     }
                     message["keyboard"] = keyboard
                     agent_logger.debug(f"[SERIALIZE] Generated keyboard for field {field}: {keyboard}")
@@ -107,7 +108,6 @@ List[Dict]:
             if out.get("state") == "Expense:confirm":
                 request_index = out["request_index"]
                 entities = out["entities"]
-                # Use format_operation_message for consistent message formatting
                 text = await format_operation_message(entities, api_client)
                 text = text.replace("<code>", "").replace("</code>", "") + "\n\nПодтвердите операцию:"
                 serialized.append({
@@ -127,7 +127,6 @@ List[Dict]:
     agent_logger.info(f"[SERIALIZE] Serialized {len(serialized)} messages")
     return serialized
 
-
 async def create_aiogram_keyboard(keyboard_data: Dict) -> InlineKeyboardMarkup:
     """Convert serialized keyboard data to aiogram InlineKeyboardMarkup."""
     agent_logger.info("[SERIALIZE] Creating aiogram keyboard")
@@ -141,7 +140,6 @@ async def create_aiogram_keyboard(keyboard_data: Dict) -> InlineKeyboardMarkup:
     keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
     agent_logger.debug(f"[SERIALIZE] Created keyboard with {len(buttons)} rows")
     return keyboard
-
 
 def deserialize_callback_data(callback_data: str, state: Dict) -> Dict:
     """Update agent state based on callback data with validation."""
@@ -175,6 +173,8 @@ def deserialize_callback_data(callback_data: str, state: Dict) -> Dict:
                                                                                                     {}).get("cats",
                                                                                                             {}).get(
                 category_code, {}).get("subs", {})
+        elif field == "creditor":
+            is_valid = value in metadata.get("creditors", {})
         if not is_valid:
             agent_logger.error(f"[SERIALIZE] Invalid {field} value {value} in callback_data: {callback_data}")
             return state

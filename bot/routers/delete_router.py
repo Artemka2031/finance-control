@@ -5,10 +5,10 @@ from aiogram import Router, Bot
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery
 
-from ...api_client import ApiClient
-from ...keyboards.delete import create_delete_operation_kb
-from ...keyboards.utils import DeleteOperationCallback, ConfirmDeleteOperationCallback
-from ...utils.logging import configure_logger
+from ..api_client import ApiClient
+from ..keyboards.delete import create_delete_operation_kb
+from ..keyboards.utils import DeleteOperationCallback, ConfirmDeleteOperationCallback
+from ..utils.logging import configure_logger
 
 logger = configure_logger("[DELETE]", "red")
 

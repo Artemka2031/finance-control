@@ -1,4 +1,3 @@
-# Bot/agent/utils.py
 import logging
 from typing import Dict, List, Any, Optional, Tuple
 
@@ -8,8 +7,8 @@ from pydantic import BaseModel, Field
 from thefuzz import process
 from typing_extensions import TypedDict
 
-from .config import OPENAI_API_KEY, BACKEND_URL
-from ..api_client import ApiClient, CodeName
+from .config import OPENAI_API_KEY
+from ..api_client import CodeName
 
 # Cache for API responses
 section_cache: List[CodeName] = []
@@ -25,49 +24,44 @@ except Exception as e:
     logger.error(f"Failed to initialize OpenAI client: {e}")
     raise
 
-
 # Logging setup
 class NoMetadataFilter(logging.Filter):
     def filter(self, record):
         return not ("[METADATA] Fetched metadata" in record.getMessage())
-
 
 def setup_logging():
     """Configure centralized logging with loguru."""
     logger.remove()  # Remove default handler
     logger.add(
         sink="logs/agent.log",
-        level="DEBUG",  # Changed from WARNING to DEBUG
+        level="DEBUG",
         format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {name} | {message}",
         rotation="10 MB",
         filter=lambda record: not ("[METADATA] Fetched metadata" in record["message"])
     )
     logger.add(
         sink=lambda msg: print(msg, end=""),
-        level="DEBUG",  # Changed from INFO to DEBUG for console
+        level="DEBUG",
         colorize=True,
         format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level}</level> | <cyan>{name}</cyan> | <level>{message}</level>"
     )
     return logger
 
-
 # Initialize logger
 agent_logger = setup_logging()
-
 
 # Data structures
 class Request(TypedDict):
     intent: str
     entities: Dict[str, Optional[str]]
     missing: List[str]
-
+    index: int
 
 class Action(TypedDict):
     request_index: int
     needs_clarification: bool
     clarification_field: Optional[str]
     ready_for_output: bool
-
 
 class AgentState(BaseModel):
     messages: List[Dict[str, Any]] = Field(default_factory=list)
@@ -77,7 +71,6 @@ class AgentState(BaseModel):
     output: Dict = Field(default_factory=lambda: {"messages": [], "output": []})
     parse_iterations: int = Field(default=0)
     metadata: Optional[Dict] = Field(default=None)
-
 
 def fuzzy_match(query: str, choices: list) -> Tuple[Optional[str], float]:
     """Perform fuzzy matching of query against choices."""

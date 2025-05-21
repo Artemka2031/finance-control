@@ -1,4 +1,3 @@
-# Bot/agent/agents/decision.py
 import json
 
 from ..prompts import DECISION_PROMPT
@@ -14,7 +13,7 @@ async def decision_agent(state: AgentState) -> AgentState:
     prompt = DECISION_PROMPT + f"\n\n**Входные данные**:\n{json.dumps({'requests': state.requests}, ensure_ascii=False)}"
     try:
         response = await openai_client.chat.completions.create(
-            model="gpt-4.1-mini",
+            model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"}
         )
