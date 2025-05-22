@@ -1,3 +1,4 @@
+# Bot/routers/expenses/confirm_router.py
 import asyncio
 from datetime import datetime
 
@@ -12,73 +13,9 @@ from ...keyboards.start_kb import create_start_kb
 from ...keyboards.utils import ConfirmOperationCallback
 from ...utils.logging import configure_logger
 from ...utils.message_utils import track_messages, delete_tracked_messages, delete_key_messages, \
-    format_operation_message
+    format_operation_message, animate_processing, check_task_status, send_success_message
 
 logger = configure_logger("[CONFIRM]", "blue")
-
-
-async def check_task_status(api_client: ApiClient, task_id: str, max_attempts: int = 10, delay: float = 2.0) -> bool:
-    for attempt in range(max_attempts):
-        try:
-            status = await api_client.get_task_status(task_id)
-            if status.get("status") == "completed":
-                logger.info(f"Task {task_id} completed successfully")
-                return True
-            elif status.get("status") in ["failed", "error"]:
-                logger.error(f"Task {task_id} failed: {status.get('error', 'Unknown error')}")
-                return False
-        except Exception as e:
-            logger.warning(f"Error checking task {task_id} status: {e}")
-        logger.debug(f"Task {task_id} still pending, attempt {attempt + 1}/{max_attempts}")
-        await asyncio.sleep(delay)
-    logger.warning(f"Task {task_id} timed out after {max_attempts} attempts")
-    return False
-
-
-async def animate_processing(bot: Bot, chat_id: int, message_id: int, base_text: str) -> None:
-    """Запускает анимацию обработки в отдельной задаче."""
-    dots = [".", "..", "..."]
-    while True:
-        for dot in dots:
-            try:
-                await bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=message_id,
-                    text=f"{base_text}\n\n⏳ Обрабатываем операцию{dot} ",
-                    reply_markup=None,
-                    parse_mode="HTML"
-                )
-                await asyncio.sleep(0.5)
-            except Exception as e:
-                logger.warning(f"Failed to animate processing for message {message_id}: {e}")
-                return
-
-
-async def send_success_message(bot: Bot, chat_id: int, message_id: int, text: str, task_ids: list[str],
-                               state: FSMContext, operation_info: str) -> None:
-    logger.info(f"Sending success message for tasks {task_ids} to chat {chat_id}")
-    # Сохраняем чистый текст операции и валидные task_ids в состоянии
-    valid_task_ids = [tid for tid in task_ids if tid is not None]
-    if not valid_task_ids:
-        logger.error(f"No valid task_ids provided: {task_ids}")
-    await state.update_data(operation_message_text=operation_info, task_ids=valid_task_ids)
-    try:
-        await bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=message_id,
-            text=text,
-            reply_markup=create_delete_operation_kb(valid_task_ids, confirm=False),
-            parse_mode="HTML"
-        )
-    except Exception as e:
-        logger.warning(f"Failed to edit success message {message_id}: {e}")
-        sent_message = await bot.send_message(
-            chat_id=chat_id,
-            text=text,
-            reply_markup=create_delete_operation_kb(valid_task_ids, confirm=False),
-            parse_mode="HTML"
-        )
-        logger.debug(f"Sent new success message {sent_message.message_id}")
 
 
 def create_confirm_router(bot: Bot, api_client: ApiClient):

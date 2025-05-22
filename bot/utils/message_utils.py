@@ -1,13 +1,15 @@
 from functools import wraps
-from typing import Union, Optional
+from typing import Union, Optional, List
 
 from aiogram import Bot
 from aiogram import html
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, CallbackQuery
+import asyncio
 
 from .logging import configure_logger
 from ..api_client import ApiClient
+from ..keyboards.delete import create_delete_operation_kb
 
 # Configure utils logger
 logger = configure_logger("[UTILS]", "blue")
@@ -40,6 +42,98 @@ KEY_MESSAGE_FIELDS = {
     "AI:clarify:comment": "clarification_message_id",
     "AI:confirm": "confirmation_message_id",
 }
+
+
+async def check_task_status(api_client: ApiClient, task_id: str, max_attempts: int = 10, delay: float = 2.0) -> bool:
+    for attempt in range(max_attempts):
+        try:
+            status = await api_client.get_task_status(task_id)
+            if status.get("status") == "completed":
+                logger.info(f"Task {task_id} completed successfully")
+                return True
+            elif status.get("status") in ["failed", "error"]:
+                logger.error(f"Task {task_id} failed: {status.get('error', 'Unknown error')}")
+                return False
+        except Exception as e:
+            logger.warning(f"Error checking task {task_id} status: {e}")
+        logger.debug(f"Task {task_id} still pending, attempt {attempt + 1}/{max_attempts}")
+        await asyncio.sleep(delay)
+    logger.warning(f"Task {task_id} timed out after {max_attempts} attempts")
+    return False
+
+
+async def animate_processing(bot: Bot, chat_id: int, message_id: int, base_text: str) -> None:
+    """Запускает анимацию обработки в отдельной задаче."""
+    dots = [".", "..", "..."]
+    while True:
+        for dot in dots:
+            try:
+                await bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text=f"{base_text}\n\n⏳ Обрабатываем операцию{dot} ",
+                    reply_markup=None,
+                    parse_mode="HTML"
+                )
+                await asyncio.sleep(0.5)
+            except Exception as e:
+                logger.warning(f"Failed to animate processing for message {message_id}: {e}")
+                return
+
+
+async def send_success_message(bot: Bot, chat_id: int, message_id: int, text: str, task_ids: List[str],
+                               state: FSMContext, operation_info: str) -> None:
+    logger.info(f"Sending success message for tasks {task_ids} to chat {chat_id}")
+    valid_task_ids = [tid for tid in task_ids if tid is not None]
+    if not valid_task_ids:
+        logger.error(f"No valid task_ids provided: {task_ids}")
+    await state.update_data(operation_message_text=operation_info, task_ids=valid_task_ids)
+    try:
+        await bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=text,
+            reply_markup=create_delete_operation_kb(valid_task_ids, confirm=False),
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logger.warning(f"Failed to edit success message {message_id}: {e}")
+        sent_message = await bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            reply_markup=create_delete_operation_kb(valid_task_ids, confirm=False),
+            parse_mode="HTML"
+        )
+        logger.debug(f"Sent new success message {sent_message.message_id}")
+
+
+async def format_income_message(data: dict, api_client: ApiClient) -> str:
+    date = data.get("date", "")
+    category_code = data.get("category_code", "")
+    amount = data.get("amount", 0)
+    comment = data.get("comment", "")
+
+    category_name = ""
+    try:
+        if category_code:
+            categories = await api_client.get_incomes()
+            category_name = next((cat.name for cat in categories if cat.code == category_code), category_code)
+        logger.debug(f"Retrieved category name: {category_name}")
+    except Exception as e:
+        logger.warning(f"Error retrieving category name: {e}")
+
+    message_lines = []
+    if date:
+        message_lines.append(f"Дата: 🗓️ {html.code(date)}")
+    if category_name:
+        message_lines.append(f"Категория: 🏷️ {html.code(category_name)}")
+    if amount:
+        message_lines.append(f"Сумма: 💰 {html.code(amount)} ₽")
+    if comment:
+        message_lines.append(f"Комментарий: 💬 {html.code(comment)}")
+
+    return "\n".join(message_lines)
+
 
 def track_messages(func):
     @wraps(func)
@@ -104,7 +198,7 @@ def track_messages(func):
             if current_key_message_id == event.message.message_id and event.message.message_id not in messages_to_delete:
                 logger.debug(f"Отредактированное сообщение {event.message.message_id} является ключевым ({key_field})")
             elif event.message.message_id not in messages_to_delete and event.message.message_id != (
-            result.message_id if isinstance(result, Message) else None):
+                    result.message_id if isinstance(result, Message) else None):
                 messages_to_delete.append(event.message.message_id)
                 logger.debug(f"Добавлено отредактированное сообщение {event.message.message_id} в messages_to_delete")
                 await state.update_data(messages_to_delete=messages_to_delete)
@@ -112,6 +206,7 @@ def track_messages(func):
         return result
 
     return wrapper
+
 
 async def delete_message(bot: Bot, chat_id: int, message_id: int) -> bool:
     try:
@@ -121,6 +216,7 @@ async def delete_message(bot: Bot, chat_id: int, message_id: int) -> bool:
     except Exception as e:
         logger.warning(f"Не удалось удалить сообщение {message_id} в чате {chat_id}: {e}")
         return False
+
 
 async def delete_tracked_messages(bot: Bot, state: FSMContext, chat_id: int,
                                   exclude_message_id: Optional[int] = None) -> None:
@@ -145,6 +241,7 @@ async def delete_tracked_messages(bot: Bot, state: FSMContext, chat_id: int,
     await state.update_data(messages_to_delete=updated_messages)
     logger.info(f"Очищен список messages_to_delete в чате {chat_id}, новый список: {updated_messages}")
 
+
 async def delete_key_messages(bot: Bot, state: FSMContext, chat_id: int,
                               exclude_message_id: Optional[int] = None) -> None:
     data = await state.get_data()
@@ -166,6 +263,7 @@ async def delete_key_messages(bot: Bot, state: FSMContext, chat_id: int,
     update_data["messages_to_delete"] = data.get("messages_to_delete", [])
     await state.update_data(**update_data)
     logger.info(f"Очищены ключевые сообщения в чате {chat_id}, исключая {exclude_message_id}")
+
 
 async def format_operation_message(data: dict, api_client: ApiClient, include_amount: bool = True) -> str:
     date = data.get("date", "")

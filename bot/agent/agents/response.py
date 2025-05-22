@@ -1,4 +1,3 @@
-# Bot/agent/agents/response.py
 import json
 from ..utils import agent_logger, openai_client, AgentState
 from ..prompts import RESPONSE_PROMPT
@@ -18,7 +17,7 @@ async def response_agent(state: AgentState) -> AgentState:
     prompt = RESPONSE_PROMPT + f"\n\n**Входные данные**:\n{json.dumps({'actions': state.actions, 'requests': state.requests}, ensure_ascii=False)}"
     try:
         response = await openai_client.chat.completions.create(
-            model="gpt-4.1-mini",
+            model="gpt-4o-mini",  # Исправлено с gpt-4.1-mini
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"}
         )

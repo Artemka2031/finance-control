@@ -9,34 +9,9 @@ from ..api_client import ApiClient
 from ..keyboards.delete import create_delete_operation_kb
 from ..keyboards.utils import DeleteOperationCallback, ConfirmDeleteOperationCallback
 from ..utils.logging import configure_logger
+from ..utils.message_utils import check_task_status
 
 logger = configure_logger("[DELETE]", "red")
-
-
-async def check_task_status(api_client: ApiClient, task_id: str, max_attempts: int = 3, delay: float = 1.0) -> dict:
-    """Проверяет статус задачи. Возвращает словарь с полным статусом задачи."""
-    for attempt in range(max_attempts):
-        try:
-            status = await api_client.get_task_status(task_id)
-            task_status = status.get("status")
-            task_type = status.get("task_type", "unknown")
-            if task_status == "completed":
-                logger.info(f"Task {task_id} ({task_type}) is completed")
-                return status
-            elif task_status in ["failed", "error"]:
-                logger.error(
-                    f"Task {task_id} ({task_type}) failed: {status.get('result', {}).get('error', 'Unknown error')}")
-                return status
-            logger.debug(f"Task {task_id} ({task_type}) still pending, attempt {attempt + 1}/{max_attempts}")
-            await asyncio.sleep(delay)
-        except Exception as e:
-            if "not found" in str(e).lower():
-                logger.warning(f"Task {task_id} not found")
-                return {"status": "not_found", "task_type": "unknown"}
-            logger.warning(f"Error checking task {task_id} status: {e}")
-            await asyncio.sleep(delay)
-    logger.warning(f"Task {task_id} timed out after {max_attempts} attempts")
-    return {"status": "pending", "task_type": "unknown"}
 
 
 async def animate_deleting(bot: Bot, chat_id: int, message_id: int, base_text: str) -> None:

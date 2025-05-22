@@ -4,6 +4,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
+from bot.routers.expenses.expenses_router import create_expenses_router
 from .comands import set_bot_commands
 from .api_client import ApiClient
 from .config import BOT_TOKEN
@@ -33,6 +34,7 @@ async def main():
 
     logger.debug("Registering routers")
     dp.include_router(create_start_router(bot))
+    dp.include_router(create_expenses_router(bot, api_client))
     dp.include_router(create_income_router(bot, api_client))
     dp.include_router(create_ai_router(bot, api_client))
     dp.include_router(create_delete_router(bot, api_client))

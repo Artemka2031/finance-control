@@ -1,4 +1,5 @@
 # Bot/agent/agent.py
+import asyncio
 import json
 from typing import Dict, Optional
 
@@ -51,7 +52,6 @@ class Agent:
 
     async def run(self, input_text: str, interactive: bool = False, selection: Optional[str] = None,
                   prev_state: Optional[Dict] = None) -> Dict:
-        """Run the agent with the given input text."""
         agent_logger.info(
             f"[RUN] Running agent with input: {input_text}, interactive: {interactive}, selection: {selection}")
         if prev_state:
@@ -64,27 +64,19 @@ class Agent:
                 output={"messages": [], "output": []}
             )
 
-        if selection:
-            if selection.startswith("CS:"):
-                key, value = selection.replace("CS:", "").split("=")
-                for req in state.requests:
-                    req["entities"][key] = value
-                    if key in req["missing"]:
-                        req["missing"].remove(key)
-                    if key == "chapter_code" and "category_code" not in req["missing"]:
-                        req["missing"].append("category_code")
-                    if key == "category_code" and "subcategory_code" not in req["missing"]:
-                        req["missing"].append("subcategory_code")
-                state.messages.append({"role": "user", "content": f"Selected: {selection}"})
-            elif selection == "cancel":
-                state.output = {
-                    "messages": [{"text": "Действие отменено.", "request_indices": []}],
-                    "output": []
-                }
-                return state.output
+        # Создаём начальное сообщение для анимации, если bot и chat_id предоставлены
+        if self.bot and self.chat_id:
+            if not self.message_id:
+                message = await self.bot.send_message(
+                    chat_id=self.chat_id,
+                    text="🔄 Начинаем обработку...",
+                    parse_mode="HTML"
+                )
+                self.message_id = message.message_id
+            state.current_stage = "start"
 
         try:
-            result = await self.graph.ainvoke(state.dict())
+            result = await self.graph.ainvoke(state.dict(), config={"callbacks": [self._animation_callback]})
             agent_logger.info(f"[RUN] Agent result")
             agent_logger.debug(f"[RUN] Agent result: {json.dumps(result['output'], indent=2, ensure_ascii=False)}")
             if not isinstance(result, dict) or "output" not in result:
@@ -149,3 +141,25 @@ class Agent:
         )
 
         return result
+
+    async def _animation_callback(self, node: str, state: Dict):
+        """Callback для анимации этапов работы агента."""
+        if not self.bot or not self.chat_id or not self.message_id:
+            return
+        stage_messages = {
+            "parse_agent": "🔍 Разбираем ваш запрос...",
+            "decision_agent": "🧠 Принимаем решение...",
+            "metadata_agent": "📋 Собираем метаданные...",
+            "response_agent": "📬 Формируем ответ..."
+        }
+        text = stage_messages.get(node, "🔄 Обрабатываем...")
+        try:
+            await self.bot.edit_message_text(
+                chat_id=self.chat_id,
+                message_id=self.message_id,
+                text=text,
+                parse_mode="HTML"
+            )
+            await asyncio.sleep(0.5)  # Задержка для плавной анимации
+        except Exception as e:
+            agent_logger.warning(f"Не удалось обновить анимацию для этапа {node}: {e}")
