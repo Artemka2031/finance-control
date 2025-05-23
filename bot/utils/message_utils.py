@@ -1,3 +1,5 @@
+# Bot/utils/message_utils.py
+import asyncio
 from functools import wraps
 from typing import Union, Optional, List
 
@@ -5,16 +7,13 @@ from aiogram import Bot
 from aiogram import html
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, CallbackQuery
-import asyncio
 
 from .logging import configure_logger
 from ..api_client import ApiClient
 from ..keyboards.delete import create_delete_operation_kb
 
-# Configure utils logger
 logger = configure_logger("[UTILS]", "blue")
 
-# Список ключевых полей для сообщений по состояниям
 KEY_MESSAGE_FIELDS = {
     "Expense:date": "date_message_id",
     "Expense:wallet": "wallet_message_id",
@@ -43,7 +42,6 @@ KEY_MESSAGE_FIELDS = {
     "AI:confirm": "confirmation_message_id",
 }
 
-
 async def check_task_status(api_client: ApiClient, task_id: str, max_attempts: int = 10, delay: float = 2.0) -> bool:
     for attempt in range(max_attempts):
         try:
@@ -61,9 +59,7 @@ async def check_task_status(api_client: ApiClient, task_id: str, max_attempts: i
     logger.warning(f"Task {task_id} timed out after {max_attempts} attempts")
     return False
 
-
 async def animate_processing(bot: Bot, chat_id: int, message_id: int, base_text: str) -> None:
-    """Запускает анимацию обработки в отдельной задаче."""
     dots = [".", "..", "..."]
     while True:
         for dot in dots:
@@ -79,7 +75,6 @@ async def animate_processing(bot: Bot, chat_id: int, message_id: int, base_text:
             except Exception as e:
                 logger.warning(f"Failed to animate processing for message {message_id}: {e}")
                 return
-
 
 async def send_success_message(bot: Bot, chat_id: int, message_id: int, text: str, task_ids: List[str],
                                state: FSMContext, operation_info: str) -> None:
@@ -105,7 +100,6 @@ async def send_success_message(bot: Bot, chat_id: int, message_id: int, text: st
             parse_mode="HTML"
         )
         logger.debug(f"Sent new success message {sent_message.message_id}")
-
 
 async def format_income_message(data: dict, api_client: ApiClient) -> str:
     date = data.get("date", "")
@@ -134,10 +128,10 @@ async def format_income_message(data: dict, api_client: ApiClient) -> str:
 
     return "\n".join(message_lines)
 
-
 def track_messages(func):
     @wraps(func)
-    async def wrapper(event: Union[Message, CallbackQuery], state: FSMContext, bot: Bot, *args, **kwargs):
+    async def wrapper(event: Union[Message, CallbackQuery], state: FSMContext, bot: Bot, api_client: ApiClient, *args,
+                      **kwargs):
         if isinstance(event, Message):
             chat_id = event.chat.id
             user_id = event.from_user.id
@@ -146,14 +140,14 @@ def track_messages(func):
         elif isinstance(event, CallbackQuery):
             if not event.message:
                 logger.warning(f"Нет сообщения в CallbackQuery от пользователя {event.from_user.id}")
-                return await func(event, state, bot, *args, **kwargs)
+                return await func(event, state, bot, api_client, *args, **kwargs)
             chat_id = event.message.chat.id
             user_id = event.from_user.id
             event_type = "CallbackQuery"
             event_id = event.message.message_id
         else:
             logger.error(f"Неподдерживаемый тип события: {type(event).__name__}")
-            return await func(event, state, bot, *args, **kwargs)
+            return await func(event, state, bot, api_client, *args, **kwargs)
 
         current_state = await state.get_state() or "AI:default"
         if "AI" in func.__module__ and not current_state.startswith("AI:"):
@@ -169,7 +163,7 @@ def track_messages(func):
         messages_to_delete = data.get("messages_to_delete", []).copy()
 
         try:
-            result = await func(event, state, bot, *args, **kwargs)
+            result = await func(event, state, bot, api_client, *args, **kwargs)
         except Exception as e:
             logger.error(f"Ошибка в обработчике {func.__name__}: {e}")
             raise
@@ -207,7 +201,6 @@ def track_messages(func):
 
     return wrapper
 
-
 async def delete_message(bot: Bot, chat_id: int, message_id: int) -> bool:
     try:
         await bot.delete_message(chat_id=chat_id, message_id=message_id)
@@ -216,7 +209,6 @@ async def delete_message(bot: Bot, chat_id: int, message_id: int) -> bool:
     except Exception as e:
         logger.warning(f"Не удалось удалить сообщение {message_id} в чате {chat_id}: {e}")
         return False
-
 
 async def delete_tracked_messages(bot: Bot, state: FSMContext, chat_id: int,
                                   exclude_message_id: Optional[int] = None) -> None:
@@ -233,14 +225,13 @@ async def delete_tracked_messages(bot: Bot, state: FSMContext, chat_id: int,
 
     for msg_id in messages_to_delete:
         if msg_id and msg_id not in key_message_ids and msg_id != exclude_message_id:
-            if await delete_message(bot, chat_id, msg_id) or True:
+            if await delete_message(bot, chat_id, msg_id):
                 updated_messages.remove(msg_id)
         else:
             updated_messages.remove(msg_id)
 
     await state.update_data(messages_to_delete=updated_messages)
     logger.info(f"Очищен список messages_to_delete в чате {chat_id}, новый список: {updated_messages}")
-
 
 async def delete_key_messages(bot: Bot, state: FSMContext, chat_id: int,
                               exclude_message_id: Optional[int] = None) -> None:
@@ -263,7 +254,6 @@ async def delete_key_messages(bot: Bot, state: FSMContext, chat_id: int,
     update_data["messages_to_delete"] = data.get("messages_to_delete", [])
     await state.update_data(**update_data)
     logger.info(f"Очищены ключевые сообщения в чате {chat_id}, исключая {exclude_message_id}")
-
 
 async def format_operation_message(data: dict, api_client: ApiClient, include_amount: bool = True) -> str:
     date = data.get("date", "")

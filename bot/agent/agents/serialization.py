@@ -1,9 +1,12 @@
+# Bot/routers/ai_router/serialization.py
 from typing import Dict, List
 
+from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-from ..utils import agent_logger
+from ...agent.utils import agent_logger
 from ...api_client import ApiClient
+from ...routers.ai_router.states import MessageState
 from ...utils.message_utils import format_operation_message
 
 
@@ -70,8 +73,8 @@ async def fetch_keyboard_items(api_client: ApiClient, field: str, entities: Dict
     return items
 
 
-async def serialize_messages(messages: List[Dict], api_client: ApiClient, metadata: Dict, output: List[Dict] = None) -> \
-List[Dict]:
+async def serialize_messages(messages: List[Dict], api_client: ApiClient, metadata: Dict, output: List[Dict] = None,
+                             state: FSMContext = None) -> List[Dict]:
     """Serialize agent messages, handling clarifications and confirmations."""
     agent_logger.info(f"[SERIALIZE] Serializing {len(messages)} messages")
     serialized = []
@@ -108,9 +111,19 @@ List[Dict]:
                     message["keyboard"] = keyboard
                     agent_logger.debug(f"[SERIALIZE] Generated keyboard for field {field}: {keyboard}")
                 else:
-                    message["keyboard"] = {
-                        "inline_keyboard": [[{"text": "Отмена", "callback_data": f"cancel:{request_index}"}]]
-                    }
+                    # Если подкатегории не найдены, запрашиваем текстовый ввод
+                    if field == "subcategory_code" and state:
+                        message[
+                            "text"] = f"Подкатегории не найдены. Введите название подкатегории для категории {entities.get('category_code')} (сумма {entities.get('amount')} рублей):"
+                        message["keyboard"] = {
+                            "inline_keyboard": [[{"text": "Отмена", "callback_data": f"cancel:{request_index}"}]]
+                        }
+                        await state.set_state(MessageState.waiting_for_text_input)
+                        await state.update_data(request_index=request_index)
+                    else:
+                        message["keyboard"] = {
+                            "inline_keyboard": [[{"text": "Отмена", "callback_data": f"cancel:{request_index}"}]]
+                        }
                     agent_logger.warning(f"[SERIALIZE] Empty keyboard for field {field}, request_index {request_index}")
         serialized.append(message)
 

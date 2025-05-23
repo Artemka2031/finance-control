@@ -1,9 +1,10 @@
-from aiogram import Router, Bot, F
+from aiogram import Router, Bot
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
-from .message_handler import create_message_router
+
 from .callback_handler import create_callback_router
+from .message_handler import create_message_router
 from .states import MessageState
 from ...api_client import ApiClient
 from ...keyboards.start_kb import create_start_kb

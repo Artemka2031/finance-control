@@ -1,7 +1,10 @@
 import json
 
+from openai import AsyncOpenAI
+
 from ..prompts import DECISION_PROMPT
-from ..utils import AgentState, openai_client, agent_logger
+from ...agent.config import OPENAI_API_KEY
+from ...agent.utils import agent_logger, AgentState
 
 
 async def decision_agent(state: AgentState) -> AgentState:
@@ -10,38 +13,113 @@ async def decision_agent(state: AgentState) -> AgentState:
     combine_responses = True
     metadata = state.metadata or {}
 
-    for idx, request in enumerate(state.requests):
-        missing = request.get("missing", [])
-        intent = request["intent"]
-        entities = request["entities"]
+    # Initialize OpenAI client
+    agent_logger.debug(
+        f"Initializing OpenAI client with API key: {'*' * len(OPENAI_API_KEY[:-4]) + OPENAI_API_KEY[-4:]}")
+    try:
+        openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+    except Exception as e:
+        agent_logger.error(f"Failed to initialize OpenAI client: {e}")
+        raise
 
-        # Проверяем валидность chapter_code и category_code
-        if intent in ["add_expense", "borrow"]:
-            chapter_code = entities.get("chapter_code")
-            category_code = entities.get("category_code")
-            if chapter_code and chapter_code not in metadata.get("expenses", {}):
-                missing.append("chapter_code")
-            if chapter_code and category_code and category_code not in metadata.get("expenses", {}).get(chapter_code,
-                                                                                                        {}).get("cats",
-                                                                                                                {}):
-                missing.append("category_code")
+    # Prepare input for LLM
+    input_data = {
+        "requests": [
+            {
+                "intent": req["intent"],
+                "entities": req["entities"],
+                "missing": req.get("missing", [])
+            }
+            for req in state.requests
+        ]
+    }
 
-        needs_clarification = bool(missing)
-        clarification_field = missing[0] if missing else None
-        ready_for_output = not missing
+    try:
+        # Call LLM to get decision
+        prompt = DECISION_PROMPT.replace("{input_data}", json.dumps(input_data, ensure_ascii=False))
+        response = await openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            temperature=0,
+            max_tokens=512
+        )
+        response_content = response.choices[0].message.content
+        response_data = json.loads(response_content)
+        agent_logger.debug(f"[DECISION] LLM Response: {json.dumps(response_data, indent=2, ensure_ascii=False)}")
 
-        if needs_clarification:
+        actions = response_data.get("actions", [])
+        combine_responses = response_data.get("combine_responses", True)
+
+        # Validate response
+        if len(actions) != len(state.requests):
+            agent_logger.error("[DECISION] Invalid LLM response: action count mismatch")
+            actions = []
             combine_responses = False
+            for idx, request in enumerate(state.requests):
+                actions.append({
+                    "request_index": idx,
+                    "needs_clarification": bool(request.get("missing", [])),
+                    "clarification_field": request.get("missing", [None])[0],
+                    "ready_for_output": not bool(request.get("missing", []))
+                })
 
-        actions.append({
-            "request_index": idx,
-            "needs_clarification": needs_clarification,
-            "clarification_field": clarification_field,
-            "ready_for_output": ready_for_output
-        })
+        # Validate metadata
+        for action in actions:
+            idx = action["request_index"]
+            request = state.requests[idx]
+            intent = request["intent"]
+            entities = request["entities"]
+
+            if intent in ["add_expense", "borrow"]:
+                chapter_code = entities.get("chapter_code")
+                category_code = entities.get("category_code")
+                if chapter_code and chapter_code not in metadata.get("expenses", {}):
+                    request["missing"] = request.get("missing", []) + ["chapter_code"]
+                    action["needs_clarification"] = True
+                    action["clarification_field"] = "chapter_code"
+                    action["ready_for_output"] = False
+                if chapter_code and category_code and category_code not in metadata.get("expenses", {}).get(
+                        chapter_code, {}).get("cats", {}):
+                    request["missing"] = request.get("missing", []) + ["category_code"]
+                    action["needs_clarification"] = True
+                    action["clarification_field"] = "category_code"
+                    action["ready_for_output"] = False
+
+    except Exception as e:
+        agent_logger.exception(f"[DECISION] LLM processing failed: {e}")
+        # Fallback to basic logic
+        required_fields = {
+            "add_income": ["category_code", "date", "amount"],
+            "add_expense": ["chapter_code", "category_code", "subcategory_code", "date", "amount", "wallet",
+                            "coefficient"],
+            "borrow": ["chapter_code", "category_code", "subcategory_code", "date", "amount", "wallet", "creditor",
+                       "coefficient"],
+            "repay": ["date", "amount", "wallet", "creditor"]
+        }
+        for idx, request in enumerate(state.requests):
+            missing = request.get("missing", [])
+            intent = request["intent"]
+            entities = request["entities"]
+            for field in required_fields.get(intent, []):
+                if field not in entities or entities[field] in [None, "", []]:
+                    if field not in missing:
+                        missing.append(field)
+            needs_clarification = bool(missing)
+            clarification_field = missing[0] if missing else None
+            ready_for_output = not missing
+            if needs_clarification:
+                combine_responses = False
+            actions.append({
+                "request_index": idx,
+                "needs_clarification": needs_clarification,
+                "clarification_field": clarification_field,
+                "ready_for_output": ready_for_output
+            })
 
     state.actions = actions
     state.combine_responses = combine_responses
+    state.requests = [dict(req, missing=req.get("missing", [])) for req in state.requests]
     agent_logger.info(f"[DECISION] Generated {len(actions)} actions: {actions}, combine: {combine_responses}")
 
     response = {
@@ -49,7 +127,7 @@ async def decision_agent(state: AgentState) -> AgentState:
         "combine_responses": combine_responses
     }
     state.messages.append({"role": "assistant", "content": json.dumps(response)})
-    agent_logger.info("[DECISION] Received OpenAI response")
-    agent_logger.debug(f"[DECISION] OpenAI response: {json.dumps(response, indent=2, ensure_ascii=False)}")
+    agent_logger.info("[DECISION] Generated response")
+    agent_logger.debug(f"[DECISION] Response: {json.dumps(response, indent=2, ensure_ascii=False)}")
 
     return state

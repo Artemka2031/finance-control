@@ -1,29 +1,31 @@
+# Bot/routers/ai_router/callback_handler.py
 import asyncio
 from datetime import datetime
+
 from aiogram import Router, Bot, F
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery
+
+from .agent_processor import process_agent_request, handle_agent_result
 from .states import MessageState
-from .agent_processor import process_agent_request, handle_agent_result, animate_agent_processing
 from ...agent.agent import Agent
 from ...agent.agents.serialization import deserialize_callback_data
 from ...api_client import ApiClient, CreditorIn, ExpenseIn, IncomeIn
-from ...keyboards.delete import create_delete_operation_kb
 from ...keyboards.start_kb import create_start_kb
-from ...utils.message_utils import track_messages, delete_tracked_messages, format_operation_message, check_task_status, \
-    animate_processing, send_success_message
 from ...utils.logging import configure_logger
+from ...utils.message_utils import track_messages, delete_tracked_messages, format_operation_message, check_task_status, \
+    send_success_message, animate_processing
 
 logger = configure_logger("[CALLBACK_HANDLER]", "magenta")
 
 
 def create_callback_router(bot: Bot, api_client: ApiClient) -> Router:
     callback_router = Router()
-    agent = Agent()
 
     @callback_router.callback_query(F.data.startswith("CS:") | F.data.startswith("cancel:"))
     @track_messages
-    async def handle_category_selection(query: CallbackQuery, state: FSMContext, bot: Bot) -> None:
+    async def handle_category_selection(query: CallbackQuery, state: FSMContext, bot: Bot,
+                                        api_client: ApiClient) -> None:
         if not query.message:
             logger.warning(f"Нет сообщения в CallbackQuery от пользователя {query.from_user.id}")
             return
@@ -72,9 +74,9 @@ def create_callback_router(bot: Bot, api_client: ApiClient) -> Router:
                     text="🔍 Обрабатываем отмену...",
                     parse_mode="HTML"
                 )
-                result = await process_agent_request(
-                    agent, input_text, interactive=True, selection=selection, prev_state=prev_state
-                )
+                agent = Agent(bot=bot, chat_id=chat_id, message_id=processing_message.message_id)
+                result = await process_agent_request(agent, input_text, interactive=True, selection=selection,
+                                                     prev_state=prev_state)
                 await handle_agent_result(
                     result, bot, state, chat_id, input_text, api_client, message_id=processing_message.message_id
                 )
@@ -86,16 +88,18 @@ def create_callback_router(bot: Bot, api_client: ApiClient) -> Router:
             text="🔍 Обрабатываем выбор...",
             parse_mode="HTML"
         )
-        result = await process_agent_request(
-            agent, input_text, interactive=True, selection=selection, prev_state=prev_state
-        )
+        agent = Agent(bot=bot, chat_id=chat_id, message_id=processing_message.message_id)
+        result = await process_agent_request(agent, input_text, interactive=True, selection=selection,
+                                             prev_state=prev_state)
         await handle_agent_result(
             result, bot, state, chat_id, input_text, api_client, message_id=processing_message.message_id
         )
 
+        return {"status": "processed"}
+
     @callback_router.callback_query(F.data.startswith("confirm_op:"))
     @track_messages
-    async def handle_confirmation(query: CallbackQuery, state: FSMContext, bot: Bot) -> None:
+    async def handle_confirmation(query: CallbackQuery, state: FSMContext, bot: Bot, api_client: ApiClient) -> None:
         if not query.message:
             logger.warning(f"Нет сообщения в CallbackQuery от пользователя {query.from_user.id}")
             return

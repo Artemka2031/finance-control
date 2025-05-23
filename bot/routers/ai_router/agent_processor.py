@@ -1,28 +1,22 @@
-import asyncio
-import random
-from typing import Optional, Dict
+# Bot/routers/ai_router/agent_processor.py
 from datetime import datetime
+from typing import Optional, Dict
+
 from aiogram import Bot
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message, Chat
+from aiogram.types import Message
 
 from ...agent.agent import Agent
 from ...agent.agents.serialization import serialize_messages, create_aiogram_keyboard
 from ...api_client import ApiClient
 from ...utils.logging import configure_logger
-from ...utils.message_utils import format_operation_message
 
 logger = configure_logger("[AGENT_PROCESSOR]", "cyan")
 
 
 async def process_agent_request(agent: Agent, input_text: str, interactive: bool = True,
-                                prev_state: Dict = None, selection: str = None, bot: Bot = None,
-                                chat_id: int = None, message_id: int = None) -> Dict:
+                                prev_state: Dict = None, selection: str = None) -> Dict:
     """Обрабатывает запрос агента."""
-    # Устанавливаем параметры для анимации
-    agent.bot = bot
-    agent.chat_id = chat_id
-    agent.message_id = message_id
     result = await agent.process_request(
         input_text,
         interactive=interactive,
@@ -30,56 +24,6 @@ async def process_agent_request(agent: Agent, input_text: str, interactive: bool
         selection=selection
     )
     return result
-
-
-async def animate_agent_processing(bot: Bot, chat_id: int, message_id: int, intent: str = None) -> None:
-    """Отображает вариативную анимацию обработки агента."""
-    general_stages = [
-        "🔍 Анализируем ваш запрос...",
-        "🧠 Разбираем детали...",
-        "📋 Проверяем информацию...",
-        "🔎 Изучаем контекст...",
-        "💡 Обрабатываем данные...",
-        "🛠️ Собираем ответ..."
-    ]
-    intent_map = {
-        "add_income": [
-            "💰 Распознаём доход...",
-            "💸 Учитываем поступление...",
-            "📈 Добавляем доход..."
-        ],
-        "add_expense": [
-            "🛒 Учитываем расход...",
-            "💳 Записываем трату...",
-            "🛍️ Обрабатываем покупку..."
-        ],
-        "borrow": [
-            "🤝 Оформляем долг...",
-            "📝 Регистрируем заём...",
-            "💶 Записываем кредит..."
-        ],
-        "repay": [
-            "✅ Возвращаем долг...",
-            "💸 Погашаем заём...",
-            "✔️ Закрываем долг..."
-        ]
-    }
-
-    stages = intent_map.get(intent, []) + random.sample(general_stages, k=min(3, len(general_stages)))
-    random.shuffle(stages)
-
-    for stage in stages[:4]:  # Ограничим до 4 этапов для скорости
-        try:
-            await bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=message_id,
-                text=stage,
-                parse_mode="HTML"
-            )
-            await asyncio.sleep(0.8)  # Ускорили анимацию
-        except Exception as e:
-            logger.warning(f"Не удалось анимировать обработку агента: {e}")
-            break
 
 
 async def handle_agent_result(result: dict, bot: Bot, state: FSMContext, chat_id: int,
@@ -93,7 +37,8 @@ async def handle_agent_result(result: dict, bot: Bot, state: FSMContext, chat_id
         messages,
         api_client,
         result.get("state", {}).get("metadata", {}),
-        output
+        output,
+        state  # Передаём state для установки waiting_for_text_input
     )
     logger.debug(f"Сериализовано {len(serialized_messages)} сообщений")
 

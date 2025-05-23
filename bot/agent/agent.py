@@ -1,8 +1,10 @@
 # Bot/agent/agent.py
 import asyncio
 import json
-from typing import Dict, Optional
+from typing import Dict, Optional, Any
 
+from aiogram import Bot
+from langchain_core.callbacks import BaseCallbackHandler
 from langgraph.graph import StateGraph, END
 
 from .agents import parse_agent, decision_agent, metadata_agent, response_agent
@@ -12,12 +14,62 @@ from ..api_client import ApiClient
 from ..utils.message_utils import format_operation_message
 
 
+class AnimationCallbackHandler(BaseCallbackHandler):
+    """Callback handler for animating agent stages in Telegram."""
+
+    def __init__(self, bot: Optional[Bot], chat_id: Optional[int], message_id: Optional[int]):
+        super().__init__()
+        self.bot = bot
+        self.chat_id = chat_id
+        self.message_id = message_id
+        self.current_text = None
+
+    async def on_chain_start(self, serialized: Dict[str, Any], inputs: Dict[str, Any], **kwargs) -> None:
+        if not self.bot or not self.chat_id or not self.message_id:
+            return
+        await self._update_message("🔄 Начинаем обработку...")
+
+    async def on_chain_end(self, outputs: Dict[str, Any], **kwargs) -> None:
+        if not self.bot or not self.chat_id or not self.message_id:
+            return
+        await self._update_message("✅ Обработка завершена")
+
+    async def on_tool_start(self, serialized: Dict[str, Any], input_str: str, **kwargs) -> None:
+        stage_messages = {
+            "parse_agent": "🔍 Разбираем ваш запрос...",
+            "decision_agent": "🧠 Принимаем решение...",
+            "metadata_agent": "📋 Собираем метаданные...",
+            "response_agent": "📬 Формируем ответ..."
+        }
+        node_name = serialized.get("name", "")
+        text = stage_messages.get(node_name, "🔄 Обрабатываем...")
+        await self._update_message(text)
+
+    async def _update_message(self, text: str) -> None:
+        if self.current_text == text:
+            return
+        try:
+            await self.bot.edit_message_text(
+                chat_id=self.chat_id,
+                message_id=self.message_id,
+                text=text,
+                parse_mode="HTML"
+            )
+            self.current_text = text
+            await asyncio.sleep(0.3)  # Reduced delay for smoother animation
+        except Exception as e:
+            agent_logger.warning(f"Не удалось обновить анимацию: {e}")
+
 class Agent:
     """Unified agent class for processing user requests using langgraph."""
 
-    def __init__(self):
+    def __init__(self, bot: Optional[Bot] = None, chat_id: Optional[int] = None, message_id: Optional[int] = None):
         self.graph = self._setup_graph()
         self.api_client = ApiClient(base_url=BACKEND_URL)
+        self.bot = bot
+        self.chat_id = chat_id
+        self.message_id = message_id
+        self.callback_handler = AnimationCallbackHandler(bot, chat_id, message_id)
 
     def _setup_graph(self) -> StateGraph:
         """Setup langgraph with all agent nodes and edges."""
@@ -64,19 +116,8 @@ class Agent:
                 output={"messages": [], "output": []}
             )
 
-        # Создаём начальное сообщение для анимации, если bot и chat_id предоставлены
-        if self.bot and self.chat_id:
-            if not self.message_id:
-                message = await self.bot.send_message(
-                    chat_id=self.chat_id,
-                    text="🔄 Начинаем обработку...",
-                    parse_mode="HTML"
-                )
-                self.message_id = message.message_id
-            state.current_stage = "start"
-
         try:
-            result = await self.graph.ainvoke(state.dict(), config={"callbacks": [self._animation_callback]})
+            result = await self.graph.ainvoke(state.dict(), config={"callbacks": [self.callback_handler]})
             agent_logger.info(f"[RUN] Agent result")
             agent_logger.debug(f"[RUN] Agent result: {json.dumps(result['output'], indent=2, ensure_ascii=False)}")
             if not isinstance(result, dict) or "output" not in result:
@@ -141,25 +182,3 @@ class Agent:
         )
 
         return result
-
-    async def _animation_callback(self, node: str, state: Dict):
-        """Callback для анимации этапов работы агента."""
-        if not self.bot or not self.chat_id or not self.message_id:
-            return
-        stage_messages = {
-            "parse_agent": "🔍 Разбираем ваш запрос...",
-            "decision_agent": "🧠 Принимаем решение...",
-            "metadata_agent": "📋 Собираем метаданные...",
-            "response_agent": "📬 Формируем ответ..."
-        }
-        text = stage_messages.get(node, "🔄 Обрабатываем...")
-        try:
-            await self.bot.edit_message_text(
-                chat_id=self.chat_id,
-                message_id=self.message_id,
-                text=text,
-                parse_mode="HTML"
-            )
-            await asyncio.sleep(0.5)  # Задержка для плавной анимации
-        except Exception as e:
-            agent_logger.warning(f"Не удалось обновить анимацию для этапа {node}: {e}")
