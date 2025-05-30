@@ -1,10 +1,9 @@
 import json
 from datetime import datetime, timedelta
-from typing import Dict, Any
 
-from ...api_client import ApiClient
 from ..config import BACKEND_URL
 from ..utils import AgentState, agent_logger, fuzzy_match
+from ...api_client import ApiClient
 
 
 async def metadata_agent(state: AgentState) -> AgentState:
@@ -46,14 +45,19 @@ async def metadata_agent(state: AgentState) -> AgentState:
                     if intent == "add_expense":
                         # Validate chapter_code
                         if "chapter_code" in missing or entities.get("chapter_code"):
+                            # Filter only valid chapter entries (exclude non-dict items like total_row)
                             chapter_names = [
                                 data["name"] for code, data in full_metadata["expenses"].items()
+                                if isinstance(data, dict) and "name" in data
                             ]
                             chapter_codes = {
                                 data["name"]: code for code, data in full_metadata["expenses"].items()
+                                if isinstance(data, dict) and "name" in data
                             }
                             if entities.get("chapter_code"):
-                                if entities["chapter_code"] in full_metadata["expenses"]:
+                                if entities["chapter_code"] in full_metadata["expenses"] and isinstance(
+                                        full_metadata["expenses"][entities["chapter_code"]], dict
+                                ):
                                     if "chapter_code" in missing:
                                         missing.remove("chapter_code")
                                 else:
@@ -71,6 +75,7 @@ async def metadata_agent(state: AgentState) -> AgentState:
                                 ("category_code" in missing or entities.get("category_code"))
                                 and entities.get("chapter_code")
                                 and entities["chapter_code"] in full_metadata["expenses"]
+                                and isinstance(full_metadata["expenses"][entities["chapter_code"]], dict)
                         ):
                             categories = full_metadata["expenses"][entities["chapter_code"]]["cats"]
                             category_names = [data["name"] for code, data in categories.items()]
@@ -95,6 +100,7 @@ async def metadata_agent(state: AgentState) -> AgentState:
                                 and entities.get("chapter_code")
                                 and entities.get("category_code")
                                 and entities["chapter_code"] in full_metadata["expenses"]
+                                and isinstance(full_metadata["expenses"][entities["chapter_code"]], dict)
                                 and entities["category_code"]
                                 in full_metadata["expenses"][entities["chapter_code"]]["cats"]
                         ):
@@ -244,6 +250,7 @@ async def metadata_agent(state: AgentState) -> AgentState:
                     if (
                             chapter_code
                             and chapter_code in full_metadata["expenses"]
+                            and isinstance(full_metadata["expenses"][chapter_code], dict)
                             and full_metadata["expenses"][chapter_code]["name"]
                     ):
                         chapter_data = full_metadata["expenses"][chapter_code]
