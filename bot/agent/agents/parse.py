@@ -1,4 +1,18 @@
+"""
+parse_agent
+───────────
+• 1-й получает список частей (`state.parts`) от split-агента
+• 2-й превращает каждую часть в «request» с помощью LLM
+• 3-й валидирует сущности и наполняет state.requests
+
+Новый блок «INTENT FIX-UP» автоматически меняет intent + wallet на borrow,
+если в тексте есть признаки долга или уже найден кредитор.
+
+Добавлено автоматическое сопоставление категорий доходов на основе comment.
+"""
+
 import json
+import re
 from datetime import datetime
 from typing import Dict, List
 
@@ -7,40 +21,71 @@ from ..prompts import get_parse_prompt
 from ..utils import AgentState, openai_client, agent_logger
 from ...api_client import ApiClient
 
+_LOAN_RE = re.compile(
+    r"\b(в\s+долг|за\s+сч[её]т|занима[юе]|бер[уё]|(?:у|от)\s+[\w\-]+?\s+занял)\b",
+    flags=re.IGNORECASE,
+)
 
-async def validate_entities(entities: Dict, metadata: Dict, intent: str) -> List[str]:
-    """Validate entities against filtered metadata and return missing or invalid fields."""
+
+async def validate_entities(
+        entities: Dict, api_client: ApiClient, intent: str
+) -> List[str]:
+    """Return list of missing / invalid required fields."""
     agent_logger.info(f"[PARSE] Validating entities for intent: {intent}")
-    missing = []
+    missing: List[str] = []
 
     if intent == "add_income":
-        if not entities.get("category_code") or entities["category_code"] not in metadata.get("incomes", {}):
+        categories = await api_client.get_incomes()
+        if (
+                not entities.get("category_code")
+                or entities["category_code"] not in {cat.code for cat in categories}
+        ):
             missing.append("category_code")
+
     elif intent in ["add_expense", "borrow"]:
-        if not entities.get("chapter_code") or entities["chapter_code"] not in metadata.get("expenses", {}):
+        sections = await api_client.get_sections()
+        if (
+                not entities.get("chapter_code")
+                or entities["chapter_code"] not in {sec.code for sec in sections}
+        ):
             missing.append("chapter_code")
-        elif entities.get("category_code") and entities["category_code"] not in metadata.get("expenses", {}).get(
-                entities["chapter_code"], {}).get("cats", {}):
-            missing.append("category_code")
-        elif entities.get("subcategory_code") and entities["subcategory_code"] not in metadata.get("expenses", {}).get(
-                entities["chapter_code"], {}).get("cats", {}).get(entities["category_code"], {}).get("subs", {}):
-            missing.append("subcategory_code")
-        elif not entities.get("category_code"):
-            missing.append("category_code")
-        elif not entities.get("subcategory_code"):
-            missing.append("subcategory_code")
+        elif entities.get("chapter_code"):
+            categories = await api_client.get_categories(entities["chapter_code"])
+            if (
+                    not entities.get("category_code")
+                    or entities["category_code"] not in {cat.code for cat in categories}
+            ):
+                missing.append("category_code")
+            elif entities.get("category_code"):
+                subcategories = await api_client.get_subcategories(
+                    entities["chapter_code"], entities["category_code"]
+                )
+                if (
+                        not entities.get("subcategory_code")
+                        or entities["subcategory_code"] not in {sub.code for sub in subcategories}
+                ):
+                    missing.append("subcategory_code")
 
     if intent in ["borrow", "repay"]:
-        if not entities.get("creditor") or entities["creditor"] not in metadata.get("creditors", {}):
+        creditors = await api_client.get_creditors()
+        if (
+                not entities.get("creditor")
+                or entities["creditor"] not in {cred.name for cred in creditors}
+        ):
             missing.append("creditor")
 
     if not entities.get("amount") or float(entities.get("amount", 0)) <= 0:
         missing.append("amount")
     if not entities.get("date"):
         missing.append("date")
+
     if intent in ["add_expense", "borrow", "repay"] and not entities.get("wallet"):
         missing.append("wallet")
-    if intent == "borrow" and (not entities.get("coefficient") or float(entities.get("coefficient", 1.0)) <= 0):
+
+    if intent == "borrow" and (
+            not entities.get("coefficient")
+            or float(entities.get("coefficient", 1.0)) <= 0
+    ):
         missing.append("coefficient")
 
     agent_logger.debug(f"[PARSE] Missing fields: {missing}")
@@ -48,92 +93,173 @@ async def validate_entities(entities: Dict, metadata: Dict, intent: str) -> List
 
 
 async def parse_agent(state: AgentState) -> AgentState:
-    """Parse user input to extract requests using LLM."""
     agent_logger.info("[PARSE] Entering parse_agent")
 
-    if state.messages and state.messages[-1].get("content", "").startswith("Selected: CS:") and state.requests:
-        agent_logger.info("[PARSE] Skipping parse due to selection, using existing requests")
+    # Если был выбор из клавиатуры
+    if (
+            state.messages
+            and state.messages[-1].get("content", "").startswith("Selected: CS:")
+            and state.requests
+    ):
+        agent_logger.info("[PARSE] Skipped due to selection")
         return state
 
+    # Safety-ограничение
     state.parse_iterations += 1
     if state.parse_iterations > 3:
-        agent_logger.error("[PARSE] Max parse iterations exceeded")
+        agent_logger.error("[PARSE] Max iterations exceeded")
         state.output = {
-            "messages": [{"text": "Слишком много попыток обработки. Попробуйте снова.", "request_indices": []}],
-            "output": []
+            "messages": [
+                {
+                    "text": "Слишком много попыток обработки. Попробуйте снова.",
+                    "request_indices": [],
+                }
+            ],
+            "output": [],
         }
         return state
 
-    # Metadata is already set by metadata_agent
+    # Инициализация ApiClient
+    api_client = ApiClient(base_url=BACKEND_URL)
+
+    # Загрузка метаданных, если они отсутствуют
     if not state.metadata:
-        async with ApiClient(base_url=BACKEND_URL) as api_client:
+        try:
             state.metadata = await api_client.get_metadata()
-            if not state.metadata:
-                agent_logger.error("[PARSE] No metadata available")
-                state.output = {
-                    "messages": [{"text": "Не удалось получить метаданные. Попробуйте снова.", "request_indices": []}],
-                    "output": []
-                }
-                return state
-
-    input_text = state.messages[0]["content"] if state.messages else ""
-    prompt = get_parse_prompt(input_text, state.metadata)
-    try:
-        response = await openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"}
-        )
-        choice = response.choices[0].message
-        agent_logger.info("[PARSE] Received OpenAI response")
-        agent_logger.debug(
-            f"[PARSE] OpenAI response: {json.dumps(json.loads(choice.model_dump_json()), indent=2, ensure_ascii=False)}"
-        )
-
-        result = json.loads(choice.content)
-        agent_logger.info("[PARSE] Parsed OpenAI result")
-        agent_logger.debug(f"[PARSE] OpenAI parsed result: {json.dumps(result, indent=2, ensure_ascii=False)}")
-
-        state.requests = []
-        requests = result.get("requests", [])
-        for i, req in enumerate(requests):
-            if req.get("intent") not in ["add_income", "add_expense", "borrow", "repay"]:
-                continue
-            entities = req.get("entities", {})
-            entities["input_text"] = input_text
-            entities.setdefault("wallet",
-                                {"add_income": "", "add_expense": "project", "borrow": "borrow", "repay": "repay"}.get(
-                                    req["intent"], ""))
-            entities.setdefault("coefficient", "1.0")
-            entities.setdefault("date", datetime.now().strftime("%d.%m.%Y"))
-            entities.setdefault("comment", "Операция")
-            entities.setdefault("creditor", "")
-            entities.setdefault("category_code", "")
-            entities.setdefault("chapter_code", "")
-            entities.setdefault("subcategory_code", "")
-
-            missing = await validate_entities(entities, state.metadata, req["intent"])
-            state.requests.append({
-                "intent": req["intent"],
-                "entities": entities,
-                "missing": missing,
-                "index": i
-            })
-
-        state.messages.append({"role": "assistant", "content": json.dumps(state.requests)})
-        agent_logger.info(
-            f"[PARSE] Parsed {len(state.requests)} requests: {json.dumps(state.requests, indent=2, ensure_ascii=False)}"
-        )
-
-        if not state.requests:
+            agent_logger.info("[PARSE] Metadata loaded successfully")
+        except Exception as e:
+            agent_logger.error(f"[PARSE] Failed to load metadata: {e}")
             state.output = {
-                "messages": [{"text": "Не удалось распознать запрос. Уточните, пожалуйста.", "request_indices": []}],
-                "output": []
+                "messages": [
+                    {
+                        "text": "Не удалось получить метаданные. Попробуйте снова.",
+                        "request_indices": [],
+                    }
+                ],
+                "output": [],
             }
-    except Exception as e:
-        agent_logger.exception(f"[PARSE] Parse agent error: {e}")
-        state.output = {
-            "messages": [{"text": "Не удалось обработать запрос. Попробуйте снова.", "request_indices": []}],
-            "output": []
+            return state
+
+    # Какие куски парсим
+    parts: List[str] = state.parts or [
+        state.messages[0]["content"] if state.messages else ""
+    ]
+    state.requests = []
+
+    # Цикл по частям
+    for part_idx, part_text in enumerate(parts):
+        prompt = get_parse_prompt(part_text, state.metadata)
+
+        try:
+            resp = await openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+            )
+            choice = resp.choices[0].message
+            agent_logger.info(f"[PARSE] LLM answered for part {part_idx}")
+            agent_logger.debug(
+                f"[PARSE] Raw LLM part {part_idx}: "
+                f"{json.dumps(json.loads(choice.model_dump_json()), indent=2, ensure_ascii=False)}"
+            )
+
+            parsed = json.loads(choice.content)
+
+            for req in parsed.get("requests", []):
+                intent = req.get("intent")
+                entities = req.get("entities", {})
+
+                # INTENT FIX-UP
+                if intent == "add_expense" and (
+                        entities.get("creditor")
+                        or _LOAN_RE.search(part_text)
+                ):
+                    agent_logger.debug(
+                        f"[PARSE] Auto-switch EXPENSE → BORROW for part {part_idx}"
+                    )
+                    intent = "borrow"
+                    entities["wallet"] = "borrow"
+
+                entities["input_text"] = part_text
+
+                # Дефолты
+                entities.setdefault(
+                    "wallet",
+                    {
+                        "add_income": "",
+                        "add_expense": "project",
+                        "borrow": "borrow",
+                        "repay": "repay",
+                    }.get(intent, ""),
+                )
+                entities.setdefault("coefficient", "1.0")
+                entities.setdefault("date", datetime.now().strftime("%d.%m.%Y"))
+                entities.setdefault("comment", "Операция")
+                entities.setdefault("creditor", "")
+                entities.setdefault("category_code", "")
+                entities.setdefault("chapter_code", "")
+                entities.setdefault("subcategory_code", "")
+
+                missing = await validate_entities(entities, api_client, intent)
+
+                state.requests.append(
+                    {
+                        "intent": intent,
+                        "entities": entities,
+                        "missing": missing,
+                        "index": len(state.requests),
+                    }
+                )
+
+        except Exception as e:
+            agent_logger.exception(f"[PARSE] LLM error on part {part_idx}: {e}")
+            continue  # Пытаемся обработать остальные части
+
+    # Автоматическое сопоставление категорий для доходов
+    for req in state.requests:
+        if req["intent"] == "add_income":
+            comment = req["entities"].get("comment", "").lower()
+            categories = await api_client.get_incomes()
+            matching_categories = [
+                cat for cat in categories
+                if comment in cat.name.lower() or any(word in cat.name.lower() for word in comment.split())
+            ]
+            if len(matching_categories) == 1:
+                req["entities"]["category_code"] = matching_categories[0].code
+                req["missing"] = [m for m in req["missing"] if m != "category_code"]
+                agent_logger.debug(
+                    f"[PARSE] Automatically set category_code={matching_categories[0].code} "
+                    f"for comment={comment}"
+                )
+            elif len(matching_categories) > 1:
+                agent_logger.debug(
+                    f"[PARSE] Multiple matching categories for comment={comment}: "
+                    f"{[c.name for c in matching_categories]}"
+                )
+            else:
+                agent_logger.debug(f"[PARSE] No matching categories for comment={comment}")
+
+    # Лог
+    state.messages.append(
+        {
+            "role": "assistant",
+            "content": json.dumps(state.requests, ensure_ascii=False),
         }
+    )
+    agent_logger.info(
+        f"[PARSE] Parsed {len(state.requests)} requests total:\n"
+        f"{json.dumps(state.requests, indent=2, ensure_ascii=False)}"
+    )
+
+    if not state.requests:
+        state.output = {
+            "messages": [
+                {
+                    "text": "Не удалось распознать запрос. Уточните, пожалуйста.",
+                    "request_indices": [],
+                }
+            ],
+            "output": [],
+        }
+
     return state

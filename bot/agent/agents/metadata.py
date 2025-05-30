@@ -32,12 +32,10 @@ async def metadata_agent(state: AgentState) -> AgentState:
                     "output": [],
                 }
                 return state
-            agent_logger.info(f"[METADATA] Fetched metadata: {len(full_metadata)} sections")
+            agent_logger.info(f"[METADATA] Fetched metadata: {len(full_metadata.get('expenses', {}))} sections")
 
             # Validate entities
             for i, action in enumerate(state.actions):
-                if not action.get("needs_clarification"):
-                    continue
                 request = state.requests[action["request_index"]]
                 entities = request["entities"]
                 missing = request["missing"]
@@ -129,7 +127,7 @@ async def metadata_agent(state: AgentState) -> AgentState:
 
                     elif intent == "add_income":
                         # Validate category_code for income
-                        if "category_code" in missing or entities.get("category_code"):
+                        if "category_code" in missing or entities.get("category_code") or entities.get("comment"):
                             category_names = [
                                 data["name"] for code, data in full_metadata["income"]["cats"].items()
                             ]
@@ -137,6 +135,7 @@ async def metadata_agent(state: AgentState) -> AgentState:
                                 data["name"]: code
                                 for code, data in full_metadata["income"]["cats"].items()
                             }
+                            # Try to match category_code if provided
                             if entities.get("category_code"):
                                 if entities["category_code"] in full_metadata["income"]["cats"]:
                                     if "category_code" in missing:
@@ -150,6 +149,17 @@ async def metadata_agent(state: AgentState) -> AgentState:
                                     else:
                                         missing.append("category_code")
                                         entities["category_code"] = None
+                            # If category_code is empty, try to match comment
+                            elif entities.get("comment"):
+                                match, score = fuzzy_match(entities["comment"], category_names)
+                                if score > 0.9:
+                                    entities["category_code"] = category_codes[match]
+                                    if "category_code" in missing:
+                                        missing.remove("category_code")
+                                else:
+                                    if "category_code" not in missing:
+                                        missing.append("category_code")
+                                    entities["category_code"] = None
 
                     elif intent in ["borrow", "repay"]:
                         # Validate creditor
@@ -304,7 +314,7 @@ async def metadata_agent(state: AgentState) -> AgentState:
                         {
                             "entities_validated": [
                                 req["entities"] for req in state.requests
-                            ],  # Simplified for logging
+                            ],
                             "metadata_filtered": filtered_metadata,
                         },
                         ensure_ascii=False,

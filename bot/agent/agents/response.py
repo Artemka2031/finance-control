@@ -1,54 +1,73 @@
+"""
+Response Agent: формирует финальные сообщения и клавиатуры для пользователя.
+"""
+
 import json
-from ..utils import agent_logger, openai_client, AgentState
-from ..prompts import RESPONSE_PROMPT
+from typing import Dict, List
+
+from ..utils import AgentState, agent_logger
+from ...api_client import ApiClient
+from ...utils.message_utils import format_operation_message
+from .serialization import fetch_keyboard_items
 
 
 async def response_agent(state: AgentState) -> AgentState:
-    """Generate response messages based on agent state."""
     agent_logger.info("[RESPONSE] Entering response_agent")
-    if not state.actions:
-        agent_logger.info("[RESPONSE] No actions to process")
-        state.output = {
-            "messages": [{"text": "Нет запросов для обработки.", "request_indices": []}],
-            "output": []
-        }
-        return state
 
-    prompt = RESPONSE_PROMPT + f"\n\n**Входные данные**:\n{json.dumps({'actions': state.actions, 'requests': state.requests}, ensure_ascii=False)}"
-    try:
-        response = await openai_client.chat.completions.create(
-            model="gpt-4o-mini",  # Исправлено с gpt-4.1-mini
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"}
-        )
-        result = json.loads(response.choices[0].message.content)
+    async with ApiClient(base_url=state.metadata.get("backend_url", "http://localhost:8000")) as api_client:
+        messages: List[Dict] = []
+        output: List[Dict] = []
+
+        for action in state.actions:
+            request_index = action["request_index"]
+            request = next((r for r in state.requests if r["index"] == request_index), None)
+            if not request:
+                continue
+
+            intent = request["intent"]
+            entities = request["entities"]
+
+            if action["needs_clarification"]:
+                field = action["clarification_field"]
+                if intent == "add_income":
+                    text = f"Уточните категорию дохода (сумма {entities['amount']} рублей):"
+                else:
+                    text = f"Уточните {field} для операции (сумма {entities['amount']} рублей):"
+                keyboard = {"inline_keyboard": []}
+
+                items = await fetch_keyboard_items(api_client, field, request, request_index, state.metadata)
+                if items:
+                    keyboard["inline_keyboard"] = [[item] for item in items]
+                    keyboard["inline_keyboard"].append(
+                        [{"text": "Отмена", "callback_data": f"cancel:{request_index}"}]
+                    )
+                else:
+                    text = f"Не удалось загрузить {field}. Попробуйте позже."
+                    keyboard["inline_keyboard"] = [
+                        [{"text": "Отмена", "callback_data": f"cancel:{request_index}"}]
+                    ]
+
+                messages.append({
+                    "text": text,
+                    "keyboard": keyboard,
+                    "request_indices": [request_index],
+                })
+
+            elif action["ready_for_output"]:
+                output.append({
+                    "request_index": request_index,
+                    "entities": entities,  # Ensure entities is a dict, not a string
+                    "state": f"{intent.capitalize()}:confirm",
+                })
+
+        state.output = {
+            "messages": messages,
+            "output": output,
+        }
+
         agent_logger.info("[RESPONSE] Response generated")
-        agent_logger.debug(f"[RESPONSE] Response generated: {json.dumps(result, indent=2, ensure_ascii=False)}")
+        agent_logger.debug(
+            f"[RESPONSE] Response generated: {json.dumps(state.output, indent=2, ensure_ascii=False)}"
+        )
 
-        # Modify callback_data to include request_index
-        for message in result.get("messages", []):
-            keyboard = message.get("keyboard")
-            if keyboard:
-                for row in keyboard["inline_keyboard"]:
-                    for button in row:
-                        if button["callback_data"].startswith("CS:"):
-                            parts = button["callback_data"].split(":")
-                            if len(parts) == 2:
-                                field, value = parts[1].split("=")
-                                request_index = message["request_indices"][0]
-                                button["callback_data"] = f"CS:{field}={value}:{request_index}"
-                            elif button["callback_data"] == "cancel":
-                                request_index = message["request_indices"][0]
-                                button["callback_data"] = f"cancel:{request_index}"
-
-        state.output = {
-            "messages": result.get("messages", []),
-            "output": result.get("output", [])
-        }
-    except Exception as e:
-        agent_logger.exception(f"[RESPONSE] Response agent error: {e}")
-        state.output = {
-            "messages": [{"text": "Ошибка при формировании ответа. Попробуйте снова.", "request_indices": []}],
-            "output": []
-        }
     return state

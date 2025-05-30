@@ -72,6 +72,8 @@ class AgentState(BaseModel):
     parse_iterations: int = Field(default=0)
     metadata: Optional[Dict] = Field(default=None)
     current_stage: Optional[str] = Field(default=None)  # Текущий этап обработки
+    parts: List[str] = Field(default_factory=list)
+
 
 def fuzzy_match(query: str, choices: list) -> Tuple[Optional[str], float]:
     """Perform fuzzy matching of query against choices."""

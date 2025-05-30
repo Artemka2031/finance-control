@@ -1,3 +1,4 @@
+# bot/comands.py
 from aiogram import Bot
 from aiogram.types import BotCommand, BotCommandScopeDefault
 

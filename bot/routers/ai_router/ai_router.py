@@ -1,3 +1,4 @@
+# Bot/routers/ai_router/ai_router.py
 from aiogram import Router, Bot, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext

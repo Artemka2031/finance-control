@@ -1,3 +1,4 @@
+# bot/api_client.py
 import os
 from typing import List, Dict, Any, Literal, Optional, Tuple
 
@@ -58,6 +59,8 @@ class ApiClient:
     def __init__(self, base_url: str = BACKEND_URL):
         self.base_url = base_url
         self.session: Optional[aiohttp.ClientSession] = None
+
+
 
     async def _ensure_session(self):
         """Ленивая инициализация aiohttp.ClientSession."""
