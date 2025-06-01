@@ -22,12 +22,12 @@ class DependencyInjectionMiddleware(BaseMiddleware):
             event: TelegramObject,
             data: Dict[str, Any]
     ) -> Any:
-        logger.debug("Entering DependencyInjectionMiddleware")
+        # logger.debug("Entering DependencyInjectionMiddleware")
         data["bot"] = self.bot
         data["api_client"] = self.api_client
         try:
             result = await handler(event, data)
-            logger.debug("Handler completed in DependencyInjectionMiddleware")
+            # logger.debug("Handler completed in DependencyInjectionMiddleware")
             return result
         except Exception as e:
             logger.error(f"Handler failed in DependencyInjectionMiddleware: {e}")

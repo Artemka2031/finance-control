@@ -14,8 +14,7 @@ from bot.comands import set_bot_commands
 from bot.middleware.dependency_injection import DependencyInjectionMiddleware
 from bot.middleware.error_handling import ErrorHandlingMiddleware
 from bot.middleware.logging import LoggingMiddleware
-from bot.routers.ai_router.callback_handler import create_callback_router
-from bot.routers.ai_router.message_handler import create_message_router
+from bot.routers.ai_router import create_ai_router
 from bot.routers.delete_router import create_delete_router
 from bot.routers.expenses.expenses_router import create_expenses_router
 from bot.routers.income.income_router import create_income_router
@@ -27,8 +26,9 @@ logger = configure_logger("[BOT]", "green")
 
 # Загрузка переменных окружения
 load_dotenv()
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-BACKEND_URL = os.getenv("BACKEND_URL")
+
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+BACKEND_URL = os.getenv("BACKEND_URL", "")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
 if not BOT_TOKEN:
@@ -60,8 +60,7 @@ async def main():
     dp.include_router(create_start_router(bot))
     dp.include_router(create_expenses_router(bot, api_client))
     dp.include_router(create_income_router(bot, api_client))
-    dp.include_router(create_message_router(bot, api_client))
-    dp.include_router(create_callback_router(bot, api_client))
+    dp.include_router(create_ai_router(bot, api_client))
     dp.include_router(create_delete_router(bot, api_client))
 
     try:

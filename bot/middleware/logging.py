@@ -9,7 +9,7 @@ logger = configure_logger("[MIDDLEWARE]", "magenta")
 class LoggingMiddleware(BaseMiddleware):
     async def __call__(self, handler, event: Update, data):
         # Log entry to middleware
-        logger.debug("Entering LoggingMiddleware")
+        # logger.debug("Entering LoggingMiddleware")
 
         # Extract the user ID from the appropriate sub-event
         user_id = 'unknown'

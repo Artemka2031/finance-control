@@ -1,3 +1,4 @@
+# bot/keyboards/confirm.py
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from .utils import ConfirmOperationCallback
 
