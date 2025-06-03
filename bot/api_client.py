@@ -55,6 +55,8 @@ class CreditorIn(BaseModel):
     class Config:
         populate_by_name = True
 
+# TODO: Написать схему для функционала получения аналитики, для этого необходимы поля для запроса на API.
+
 class ApiClient:
     def __init__(self, base_url: str = BACKEND_URL):
         self.base_url = base_url
@@ -310,3 +312,5 @@ class ApiClient:
         if "detail" in data:
             return AckOut(ok=False, detail=data["detail"])
         return AckOut(**data)
+
+    #TODO: Ручки по получению аналитики

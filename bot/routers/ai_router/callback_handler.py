@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Optional, Dict, Any
 
 from aiogram import Router, Bot, F
+from aiogram.enums import ParseMode
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
@@ -151,6 +152,7 @@ def create_callback_router(bot: Bot, api_client: ApiClient) -> Router:
 
         # -- отменяем активные таймеры
         data = await state.get_data()
+
         for t in data.get("timer_tasks", []):
             t["task"].cancel()
         await state.update_data(timer_tasks=[])
@@ -158,26 +160,35 @@ def create_callback_router(bot: Bot, api_client: ApiClient) -> Router:
         # -- достаём текущий agent_state
         data = await state.get_data()
         operation_info = data.get("operation_info", "Операция")
-        prev_state = _safe_state(data)
+        # prev_state = _safe_state(data)
 
         # -- ищем нужный request
-        request = next(
-            (r for r in prev_state.get("requests", []) if r.get("index", -1) == request_index),
-            None,
-        )
-        if not request:
-            await bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=message_id,
-                text="😓 Ошибка: запрос не найден",
-                parse_mode="HTML",
-            )
-            return query.message
+        # request = next(
+        #     (r for r in prev_state.get("requests", []) if r.get("index", -1) == request_index),
+        #     None,
+        # )
+        #
+        # if not request:
+        #     await bot.edit_message_text(
+        #         chat_id=chat_id,
+        #         message_id=message_id,
+        #         text="😓 Ошибка: запрос не найден",
+        #         parse_mode="HTML",
+        #     )
+        #     return query.message
 
         await state.set_state(MessageState.confirming_operation)
 
-        entities = request["entities"]
-        intent = request["intent"]
+        entities = data["entities"]
+        intent = data["intent"]
+
+        if not entities or not intent:
+            await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text="😓 Ошибка: данные операции не найдены",
+                parse_mode=ParseMode.HTML
+            )
 
         # ---------- 2.2.a Статус «⏳ Подтверждаем…» + анимация ---------- #
         await bot.edit_message_text(
@@ -206,7 +217,6 @@ def create_callback_router(bot: Bot, api_client: ApiClient) -> Router:
                 if not resp.ok or not resp.task_id:
                     raise RuntimeError(resp.detail or "No task id")
                 task_ids.append(resp.task_id)
-
             elif intent == "add_expense":
                 dto = ExpenseIn(
                     date=date_str,

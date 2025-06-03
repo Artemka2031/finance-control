@@ -2,9 +2,7 @@
 import asyncio
 import os
 
-from aiogram import Bot, Dispatcher
-from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
+from aiogram import Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.storage.redis import RedisStorage
 from dotenv import load_dotenv
@@ -20,6 +18,7 @@ from bot.routers.expenses.expenses_router import create_expenses_router
 from bot.routers.income.income_router import create_income_router
 from bot.routers.start_router import create_start_router
 from bot.utils.logging import configure_logger
+from bot import init_bot
 
 # Настройка логгера
 logger = configure_logger("[BOT]", "green")
@@ -27,25 +26,20 @@ logger = configure_logger("[BOT]", "green")
 # Загрузка переменных окружения
 load_dotenv()
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 BACKEND_URL = os.getenv("BACKEND_URL", "")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
-if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN is not set in .env file")
 if not BACKEND_URL:
     raise ValueError("BACKEND_URL is not set in .env file")
+
 
 async def main():
     logger.info("Starting bot application")
 
     # Инициализация бота и диспетчера
     logger.info("Initializing bot and dispatcher")
-    bot = Bot(
-        token=BOT_TOKEN,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML)
-    )
     storage = RedisStorage.from_url(REDIS_URL) if REDIS_URL else MemoryStorage()
+    bot = init_bot.bot
     dp = Dispatcher(storage=storage)
     api_client = ApiClient(base_url=BACKEND_URL)
 
@@ -62,7 +56,6 @@ async def main():
     dp.include_router(create_income_router(bot, api_client))
     dp.include_router(create_ai_router(bot, api_client))
     dp.include_router(create_delete_router(bot, api_client))
-
     try:
         logger.info("Bot is starting...")
         await set_bot_commands(bot)

@@ -12,6 +12,7 @@ from aiogram import Router, Bot, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, Voice, InlineKeyboardMarkup, InlineKeyboardButton
+from langchain_core.tracers.langchain import log_error_once
 
 from .agent_processor import process_agent_request
 from .states import MessageState
@@ -25,6 +26,7 @@ from ...utils.message_utils import (
     animate_processing,
     format_operation_message,
 )
+from ...utils.voice_messages_utils import handle_audio_message
 
 # ------------------------------------------------------------------ #
 # 1. Логгер и единый Agent                                           #
@@ -73,7 +75,7 @@ def create_message_router(bot: Bot, api_client: ApiClient) -> Router:
     # -------------------------------------------------------------- #
     # 3.1 Обработка текстовых запросов #ИИ                           #
     # -------------------------------------------------------------- #
-    @router.message(MessageState.initial or MessageState.waiting_for_ai_input)
+    @router.message(MessageState.initial or MessageState.waiting_for_ai_input, F.text)
     @track_messages
     async def handle_ai_message(msg: Message, state: FSMContext, bot: Bot) -> Message:
         async with ApiClient(base_url=BACKEND_URL) as api_client:
@@ -132,13 +134,13 @@ def create_message_router(bot: Bot, api_client: ApiClient) -> Router:
     # -------------------------------------------------------------- #
     @router.message(MessageState.initial or MessageState.waiting_for_ai_input, F.voice)
     @track_messages
-    async def handle_voice(msg: Voice, state: FSMContext, bot: Bot) -> Message:
+    async def handle_voice(msg: Message, state: FSMContext, bot: Bot) -> Message:
         async with ApiClient(base_url=BACKEND_URL) as api_client:
             chat_id = msg.chat.id
             logger.debug(f"[HANDLE_AI] Handling voice, state: {await state.get_state()}")
             await delete_tracked_messages(bot, state, chat_id)
-
-            text = "Купил кофе за 250 рублей"  # TODO: заменить на реальное распознавание
+            file_id_voice = msg.voice.file_id
+            text = await handle_audio_message(file_id_voice, f"audio_{file_id_voice}.ogg")
             await bot.send_message(chat_id=chat_id, text=f"🎙️ Распознанный текст: {text}", parse_mode="HTML")
 
             status = await bot.send_message(
@@ -300,6 +302,22 @@ def create_message_router(bot: Bot, api_client: ApiClient) -> Router:
 
             msg_text = await format_operation_message(entities, api_client)
             msg_text += "\n\nПодтвердите операцию:"
+
+            request = next(
+                (r for r in result.get("state", {}).get("requests", []) if r.get("index") == out["request_index"]),
+                None
+            )
+            intent = request.get("intent") if request else "unknown"
+
+            await state.set_data({
+                "request_index": out["request_index"],
+                "entities": entities,
+                "intent": intent,
+                "state": out.get("state"),
+                "messages_to_delete": (await state.get_data()).get("messages_to_delete", []),
+                "input_text": input_text
+            })
+
             kb = InlineKeyboardMarkup(
                 inline_keyboard=[
                     [
@@ -332,3 +350,5 @@ def create_message_router(bot: Bot, api_client: ApiClient) -> Router:
     # 3.5 Возврат роутера                                             #
     # -------------------------------------------------------------- #
     return router
+
+    # TODO: добавить обработку операции get_analytics
