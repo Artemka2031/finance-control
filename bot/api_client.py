@@ -174,7 +174,7 @@ class ApiClient:
             self,
             date: str,
             level: Literal["section", "category", "subcategory"] = "subcategory",
-            zero_suppress: bool = False,
+            zero_suppress: bool = True,
             include_month_summary: bool = True,
             include_comments: bool = True
     ) -> Dict[str, Any]:
@@ -197,7 +197,7 @@ class ApiClient:
             start_date: str,
             end_date: str,
             level: Literal["section", "category", "subcategory"] = "subcategory",
-            zero_suppress: bool = False,
+            zero_suppress: bool = True,
             include_comments: bool = True
     ) -> Dict[str, Any]:
         """Получение сводки расходов за период."""
@@ -212,7 +212,7 @@ class ApiClient:
             self,
             ym: str,
             level: Literal["section", "category", "subcategory"] = "subcategory",
-            zero_suppress: bool = False,
+            zero_suppress: bool = True,
             include_balances: bool = False
     ) -> Dict[str, Any]:
         """Получение итогов за месяц (доходы, расходы, кредиторы, балансы)."""
@@ -226,7 +226,7 @@ class ApiClient:
     async def months_overview(
             self,
             level: Literal["section", "category", "subcategory"] = "subcategory",
-            zero_suppress: bool = False,
+            zero_suppress: bool = True,
             include_balances: bool = False
     ) -> Dict[str, Dict[str, Any]]:
         """Получение финансового обзора по всем месяцам."""
