@@ -55,8 +55,6 @@ class CreditorIn(BaseModel):
     class Config:
         populate_by_name = True
 
-# TODO: Написать схему для функционала получения аналитики, для этого необходимы поля для запроса на API.
-
 class ApiClient:
     def __init__(self, base_url: str = BACKEND_URL):
         self.base_url = base_url
@@ -110,10 +108,15 @@ class ApiClient:
         builder.adjust(adjust)
         return builder.as_markup()
 
-    async def _make_request(self, method: str, endpoint: str, **kwargs) -> Dict[str, Any]:
+    async def _make_request(self, method: str, endpoint: str, **kwargs) -> Any:
         """Внутренний метод для выполнения HTTP-запросов."""
         await self._ensure_session()
         try:
+            if "params" in kwargs and kwargs["params"]:
+                kwargs["params"] = {
+                    k: str(v).lower() if isinstance(v, bool) else v
+                    for k, v in kwargs["params"].items()
+                }
             async with self.session.request(method, f"{self.base_url}{endpoint}", **kwargs) as resp:
                 data = await resp.json()
                 if resp.status >= 400:
@@ -172,7 +175,7 @@ class ApiClient:
             date: str,
             level: Literal["section", "category", "subcategory"] = "subcategory",
             zero_suppress: bool = False,
-            include_month_summary: bool = False,
+            include_month_summary: bool = True,
             include_comments: bool = True
     ) -> Dict[str, Any]:
         """Получение детализированного отчёта за день."""
@@ -312,5 +315,3 @@ class ApiClient:
         if "detail" in data:
             return AckOut(ok=False, detail=data["detail"])
         return AckOut(**data)
-
-    #TODO: Ручки по получению аналитики

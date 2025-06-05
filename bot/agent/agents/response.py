@@ -1,7 +1,3 @@
-"""
-Response Agent: формирует финальные сообщения и клавиатуры для пользователя.
-"""
-
 import json
 from typing import Dict, List
 
@@ -15,8 +11,8 @@ async def response_agent(state: AgentState) -> AgentState:
     agent_logger.info("[RESPONSE] Entering response_agent")
 
     async with ApiClient(base_url=state.metadata.get("backend_url", "http://localhost:8000")) as api_client:
-        messages: List[Dict] = []
-        output: List[Dict] = []
+        messages: List[Dict] = state.output.get("messages", [])  # Сохраняем существующие messages
+        output: List[Dict] = state.output.get("output", [])
 
         for action in state.actions:
             request_index = action["request_index"]
@@ -26,6 +22,11 @@ async def response_agent(state: AgentState) -> AgentState:
 
             intent = request["intent"]
             entities = request["entities"]
+
+            if intent == "get_analytics":
+                # Для аналитики сохраняем messages без добавления output
+                agent_logger.debug(f"[RESPONSE] Preserving messages for get_analytics: {messages}")
+                continue
 
             if action["needs_clarification"]:
                 field = action["clarification_field"]
@@ -56,7 +57,7 @@ async def response_agent(state: AgentState) -> AgentState:
             elif action["ready_for_output"]:
                 output.append({
                     "request_index": request_index,
-                    "entities": entities,  # Ensure entities is a dict, not a string
+                    "entities": entities,
                     "state": f"{intent.capitalize()}:confirm",
                 })
 

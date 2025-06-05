@@ -144,7 +144,6 @@ async def parse_agent(state: AgentState) -> AgentState:
             state.messages[0]["content"] if state.messages else ""
         ]
         state.requests = []
-
         # Цикл по частям
         for part_idx, part_text in enumerate(parts):
             prompt = get_parse_prompt(part_text, state.metadata)

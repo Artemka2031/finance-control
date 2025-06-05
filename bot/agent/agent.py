@@ -10,6 +10,7 @@ from typing import Dict, Optional
 from langgraph.graph import StateGraph, END
 
 from .agents import parse_agent, decision_agent, metadata_agent, response_agent
+from .agents.expense_analysis import expense_analysis_agent
 from .agents.split import split_agent
 from .config import BACKEND_URL
 from .utils import AgentState, agent_logger
@@ -38,6 +39,7 @@ class Agent:
         # Узлы
         graph.add_node("split_agent", split_agent)
         graph.add_node("parse_agent", parse_agent)
+        graph.add_node("expense_analysis_agent", expense_analysis_agent)
         graph.add_node("decision_agent", decision_agent)
         graph.add_node("metadata_agent", metadata_agent)
         graph.add_node("response_agent", response_agent)
@@ -54,7 +56,15 @@ class Agent:
             },
         )
         graph.add_edge("decision_agent", "metadata_agent")
-        graph.add_edge("metadata_agent", "response_agent")
+        graph.add_conditional_edges(
+            "metadata_agent",
+            self._route_to_analysis,
+            {
+                "expense_analysis_agent": "expense_analysis_agent",
+                "response_agent": "response_agent",
+            },
+        )
+        graph.add_edge("expense_analysis_agent", "response_agent")
         graph.add_edge("response_agent", END)
 
         return graph.compile()
@@ -72,6 +82,15 @@ class Agent:
             if req.get("missing"):
                 return "decision_agent"
         return "decision_agent"
+
+    @staticmethod
+    def _route_to_analysis(state: AgentState) -> str:
+        """Route to expense_analysis_agent for get_analytics, otherwise to response_agent."""
+        for action in state.actions:
+            request = state.requests[action["request_index"]]
+            if request.get("intent") == "get_analytics" and not action.get("needs_clarification"):
+                return "expense_analysis_agent"
+        return "response_agent"
 
     # -------------------------------------------------------------- #
     # 1.4 Основной запуск графа                                       #

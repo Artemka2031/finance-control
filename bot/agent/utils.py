@@ -53,7 +53,7 @@ agent_logger = setup_logging()
 # Data structures
 class Request(TypedDict):
     intent: str
-    entities: Dict[str, Optional[str]]
+    entities: Dict[str, Optional[str] | bool]
     missing: List[str]
     index: int
 

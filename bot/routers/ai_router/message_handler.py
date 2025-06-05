@@ -9,6 +9,7 @@ import json
 from typing import Any, Dict
 
 from aiogram import Router, Bot, F
+from aiogram.enums import ParseMode
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, Voice, InlineKeyboardMarkup, InlineKeyboardButton
@@ -278,24 +279,30 @@ def create_message_router(bot: Bot, api_client: ApiClient) -> Router:
             logger.info(f"[HANDLE_AI] Set state to waiting_for_ai_input for chat {chat_id}, cleared agent_state")
 
         # -- блок «сообщения» (уточнения) --
+        # -- блок «сообщения» (уточнения и аналитика) --
         for msg in result.get("messages", []):
             text = msg.get("text", "")
             keyboard_data = msg.get("keyboard", {})
             if text:
-                kb = InlineKeyboardMarkup(inline_keyboard=keyboard_data.get("inline_keyboard", []))
-                sent = await bot.send_message(chat_id=chat_id, text=text, reply_markup=kb, parse_mode="HTML")
-                messages_to_delete.append(sent.message_id)
+                # Клавиатура только для уточнений
+                kb = None
+                if has_clarifications and keyboard_data.get("inline_keyboard"):
+                    kb = InlineKeyboardMarkup(inline_keyboard=keyboard_data.get("inline_keyboard", []))
+                # Разбиваем длинный текст (Telegram: max 4096 символов)
+                while text:
+                    chunk = text[:4096]
+                    text = text[4096:]
+                    sent = await bot.send_message(
+                        chat_id=chat_id,
+                        text=chunk,
+                        reply_markup=kb if not text else None,
+                        parse_mode="HTML"
+                    )
+                    messages_to_delete.append(sent.message_id)
 
-        # -- блок «output» (подтверждения) --
+            # -- блок «output» (подтверждения операций) --
         for out in result.get("output", []):
-            entities = out.get("entities")
-            if isinstance(entities, str):
-                try:
-                    entities = json.loads(entities)
-                    out["entities"] = entities
-                except json.JSONDecodeError:
-                    logger.error(f"[HANDLE_AI] Failed to deserialize entities: {entities}")
-                    continue
+            entities = out.get("entities", {})
             if not isinstance(entities, dict):
                 logger.error(f"[HANDLE_AI] Invalid entities type: {type(entities)}")
                 continue
@@ -304,25 +311,27 @@ def create_message_router(bot: Bot, api_client: ApiClient) -> Router:
             msg_text += "\n\nПодтвердите операцию:"
 
             request = next(
-                (r for r in result.get("state", {}).get("requests", []) if r.get("index") == out["request_index"]),
+                (r for r in result.get("state", {}).get("requests", []) if
+                 r.get("index") == out.get("request_index")),
                 None
             )
             intent = request.get("intent") if request else "unknown"
 
             await state.set_data({
-                "request_index": out["request_index"],
+                "request_index": out.get("request_index"),
                 "entities": entities,
                 "intent": intent,
                 "state": out.get("state"),
-                "messages_to_delete": (await state.get_data()).get("messages_to_delete", []),
+                "messages_to_delete": messages_to_delete,
                 "input_text": input_text
             })
 
             kb = InlineKeyboardMarkup(
                 inline_keyboard=[
                     [
-                        InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"confirm_op:{out['request_index']}"),
-                        InlineKeyboardButton(text="❌ Отменить", callback_data=f"cancel:{out['request_index']}"),
+                        InlineKeyboardButton(text="✅ Подтвердить",
+                                             callback_data=f"confirm_op:{out.get('request_index')}"),
+                        InlineKeyboardButton(text="❌ Отменить", callback_data=f"cancel:{out.get('request_index')}"),
                     ]
                 ]
             )
@@ -350,5 +359,3 @@ def create_message_router(bot: Bot, api_client: ApiClient) -> Router:
     # 3.5 Возврат роутера                                             #
     # -------------------------------------------------------------- #
     return router
-
-    # TODO: добавить обработку операции get_analytics

@@ -1,4 +1,5 @@
 from aiogram import Router, Bot
+from aiogram.enums import ParseMode
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
@@ -42,8 +43,9 @@ def create_ai_router(bot: Bot, api_client: ApiClient) -> Router:
 
         sent_message = await bot.send_message(
             chat_id=chat_id,
-            text="🤖 Готов обработать ваш запрос! Напишите #ИИ и ваш запрос, например: #ИИ Купил кофе за 250",
-            reply_markup=create_start_kb()
+            text="🤖 Готов обработать ваш запрос! Напишите <code>#ИИ</code> и ваш запрос или <code>запишите голосовое сообщение</code>, например:\n\n#ИИ Купил кофе за 250 рублей /\n🎙️ Сколько я потратил в прошлом месяце?",
+            reply_markup=create_start_kb(),
+            parse_mode=ParseMode.HTML
         )
         await state.set_state(MessageState.initial)
         logger.info(f"[AI_ROUTER] Set state to initial for chat {chat_id}, sent message {sent_message.message_id}")

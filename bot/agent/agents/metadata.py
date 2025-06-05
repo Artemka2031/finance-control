@@ -309,6 +309,96 @@ async def metadata_agent(state: AgentState) -> AgentState:
                             creditor
                         ]
 
+                elif intent == "get_analytics":
+                    date = entities.get("date", "")
+                    valid_periods = ['day', 'month', 'custom', 'overview']
+                    if entities.get("period") not in valid_periods:
+                        missing.append("period")
+                        entities["period"] = None
+                    else:
+                        period = entities["period"]
+
+
+                    valid_levels = ['section', 'category', 'subcategory']
+                    if entities.get("level") not in valid_levels:
+                        missing.append("level")
+                        entities["level"] = None
+                    else:
+                        level = entities["level"]
+
+                    for field in ["zero_suppress", "include_comments", "include_month_summary"]:
+                        if field not in [True, False]:
+                            missing.append(field)
+                            entities[field] = False
+                            if field not in missing:
+                                missing.append(field)
+
+                    if period == "day":
+                        if date:
+                            try:
+                                if date.lower() in ["позавчера", "вчера", "сегодня"]:
+                                    if date.lower() == "позавчера":
+                                        entities["date"] = (datetime.now() - timedelta(days=2)).strftime(
+                                            "%d.%m.%Y"
+                                        )
+                                    elif date.lower() == "вчера":
+                                        entities["date"] = (datetime.now() - timedelta(days=1)).strftime(
+                                            "%d.%m.%Y"
+                                        )
+                                    elif date.lower() == "сегодня":
+                                        entities["date"] = datetime.now().strftime("%d.%m.%Y")
+                                    else:
+                                        datetime.strptime(date, "%d.%m.%Y")
+
+                                    if "date" in missing:
+                                        missing.remove("date")
+                            except ValueError:
+                                missing.append("date")
+                                entities["date"] = None
+                        else:
+                            missing.append("date")
+                            entities["date"] = None
+
+                    elif period == "month":
+                        ym = entities.get("ym")
+                        if ym:
+                            try:
+                                datetime.strptime(ym, "%Y-%m")
+                                if "ym" in missing:
+                                    missing.remove("ym")
+                            except ValueError:
+                                missing.append("ym")
+                                entities["ym"] = None
+                        else:
+                            missing.append("ym")
+                            entities["ym"] = None
+
+                    elif period == "custom":
+                        start_date = entities.get("start_date")
+                        end_date = entities.get("end_date")
+                        if start_date and end_date:
+                            try:
+                                datetime.strptime(start_date, "%d.%m.%Y")
+                                datetime.strptime(end_date, "%d.%m.%Y")
+                                if "start_date" in missing:
+                                    missing.remove("start_date")
+                                if "end_date" in missing:
+                                    missing.remove("end_date")
+                            except ValueError:
+                                missing.extend(["start_date", "end_date"])
+                                entities["start_date"] = None
+                                entities["end_date"] = None
+                        else:
+                            missing.extend(["start_date" if not start_date else "", "end_date" if not end_date else ""])
+                            missing = [m for m in missing if m]
+                            entities["start_date"] = None if not start_date else entities["start_date"]
+                            entities["end_date"] = None if not end_date else entities["end_date"]
+
+                    elif period == "overview":
+                        pass
+
+
+
                 if date and date in full_metadata["date_cols"]:
                     filtered_metadata["date_cols"][date] = full_metadata["date_cols"][date]
 
