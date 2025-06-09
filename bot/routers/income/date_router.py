@@ -2,13 +2,14 @@ from aiogram import Router, Bot, html
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-from .state_income import Income
-from ...api_client import ApiClient
-from ...filters.check_date import CheckDateFilter
-from ...keyboards.income_category import create_income_category_keyboard
-from ...keyboards.today import create_today_keyboard, TodayCallback
-from ...utils.logging import configure_logger
-from ...utils.message_utils import track_messages, delete_message, delete_tracked_messages
+from api_client import ApiClient
+from filters.check_date import CheckDateFilter
+from keyboards.income_category import create_income_category_keyboard
+from keyboards.today import create_today_keyboard
+from keyboards.utils import TodayCallback
+from routers.income.state_income import Income
+from utils.logging import configure_logger
+from utils.message_utils import track_messages, delete_tracked_messages, delete_message
 
 logger = configure_logger("[DATE]", "cyan")
 

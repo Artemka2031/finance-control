@@ -115,7 +115,7 @@ class SheetMeta:
             date_row = self._index_in_col_b("Р0")
         if date_row == -1:
             log.warning("Date row ('П' or 'Р0') not found in column B")
-            log.debug(f"First 10 elements of col_b: {self.col_b[:10]}")
+            # log.debug(f"First 10 elements of col_b: {self.col_b[:10]}")
             return False
 
         log.info(f"Date row found at index {date_row}")

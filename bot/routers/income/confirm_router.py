@@ -4,14 +4,13 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-from .state_income import Income
-from ...api_client import ApiClient, IncomeIn
-from ...keyboards.delete import create_delete_operation_kb
-from ...keyboards.start_kb import create_start_kb
-from ...keyboards.utils import ConfirmOperationCallback
-from ...utils.logging import configure_logger
-from ...utils.message_utils import track_messages, delete_tracked_messages, delete_key_messages, format_income_message, \
-    check_task_status, animate_processing, send_success_message
+from api_client import ApiClient, IncomeIn
+from keyboards.start_kb import create_start_kb
+from keyboards.utils import ConfirmOperationCallback
+from routers.income.state_income import Income
+from utils.logging import configure_logger
+from utils.message_utils import format_income_message, check_task_status, animate_processing, track_messages, \
+    send_success_message, delete_tracked_messages, delete_key_messages
 
 logger = configure_logger("[CONFIRM]", "green")
 

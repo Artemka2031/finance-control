@@ -1,7 +1,7 @@
 from aiogram.types import InlineKeyboardMarkup
 
-from bot.api_client import ApiClient
-from bot.keyboards.utils import build_inline_keyboard, ChooseSectionCallback, ChooseCategoryCallback, \
+from api_client import ApiClient
+from keyboards.utils import ChooseSectionCallback, build_inline_keyboard, ChooseCategoryCallback, \
     ChooseSubCategoryCallback
 
 

@@ -1,9 +1,9 @@
 import json
 from datetime import datetime, timedelta
 
-from ..config import BACKEND_URL
-from ..utils import AgentState, agent_logger, fuzzy_match
-from ...api_client import ApiClient
+from agent.utils import AgentState, agent_logger
+from api_client import ApiClient
+from config import BACKEND_URL
 
 
 async def metadata_agent(state: AgentState) -> AgentState:

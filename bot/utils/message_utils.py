@@ -1,3 +1,4 @@
+# bot/utils/message_utils.py
 from __future__ import annotations
 
 import asyncio
@@ -9,9 +10,9 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, CallbackQuery
 
-from .logging import configure_logger
-from ..api_client import ApiClient
-from ..keyboards.delete import create_delete_operation_kb
+from api_client import ApiClient
+from keyboards.delete import create_delete_operation_kb
+from utils.logging import configure_logger
 
 # ------------------------------------------------------------------ #
 # 1. Логгер                                                          #

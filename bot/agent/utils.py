@@ -7,8 +7,8 @@ from pydantic import BaseModel, Field
 from thefuzz import process
 from typing_extensions import TypedDict
 
-from .config import OPENAI_API_KEY
-from ..api_client import CodeName
+from api_client import CodeName
+from config import OPENAI_API_KEY
 
 # Cache for API responses
 section_cache: List[CodeName] = []

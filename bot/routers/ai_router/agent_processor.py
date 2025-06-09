@@ -8,11 +8,11 @@ from aiogram import Bot
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
-from ...agent.agent import Agent
-from ...agent.agents.serialization import serialize_messages, create_aiogram_keyboard
-from ...api_client import ApiClient
-from ...utils.logging import configure_logger
-from ...utils.message_utils import cancel_expired_message
+from agent.agent import Agent
+from agent.agents.serialization import serialize_messages, create_aiogram_keyboard
+from api_client import ApiClient
+from utils.logging import configure_logger
+from utils.message_utils import cancel_expired_message
 
 logger = configure_logger("[AGENT_PROCESSOR]", "cyan")
 

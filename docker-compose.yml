@@ -1,30 +1,49 @@
-﻿services:
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    ports:
-      - '6379:6379'
-    volumes:
-      - redis_data:/data
+﻿version: '3.8'
 
-  gateway:
-    build:
-      context: .
-      dockerfile: gateway/Dockerfile
-    env_file: .env
-    depends_on:
-      - redis
-    ports:
-      - '8000:8000'
-
+services:
   bot:
-    build:
-      context: .
-      dockerfile: bot/Dockerfile
-    env_file: .env
+    build: ./bot
+    environment:
+      - BOT_TOKEN=7651160989:AAHH48oHKiPWk7eusGg9gLde4uto5IaW280
+      - BACKEND_URL=http://gateway:8000      # используем имя сервиса gateway
+      - OPENAI_API_KEY=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
+      - REDIS_URL=redis://redis:6379/0
+      - PATH_TO_AUDIO=/app/audios
+      - USE_REDIS=true
+    volumes:
+      - ./bot/audios:/app/audios
     depends_on:
       - gateway
       - redis
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+
+  gateway:
+    build: ./gateway
+    environment:
+      - SPREADSHEET_URL=https://docs.google.com/spreadsheets/d/1VPxgpVwQjtdDuqbFaOSAc9Nfj1a4EYnba7FvaJgvN2g
+      - REDIS_URL=redis://redis:6379/0
+      - GS_MAX_ROWS=300
+      - WORKSHEET_NAME=Общая таблица
+      - FASTAPI_PORT=8000
+      - DATABASE_PATH=/app/tasks.db
+      - GOOGLE_CREDENTIALS_FILE=/app/creds.json   # говорим, где лежит секрет
+    volumes:
+      - ./creds.json:/app/creds.json:ro           # читаем‑только
+    depends_on:
+      - redis
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+
+  redis:
+    image: redis:7.2-alpine
+    volumes:
+      - redis-data:/data
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
 
 volumes:
-  redis_data:
+  redis-data:

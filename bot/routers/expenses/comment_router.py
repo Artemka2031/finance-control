@@ -2,12 +2,12 @@ from aiogram import Router, Bot, F
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
-from ..expenses.state_classes import Expense
-from ...api_client import ApiClient
-from ...keyboards.confirm import create_confirm_keyboard
-from ...utils.logging import configure_logger
-from ...utils.message_utils import track_messages, delete_message, delete_tracked_messages, delete_key_messages, \
-    format_operation_message
+from api_client import ApiClient
+from keyboards.confirm import create_confirm_keyboard
+from routers.expenses.state_classes import Expense
+from utils.logging import configure_logger
+from utils.message_utils import track_messages, format_operation_message, delete_message, delete_key_messages, \
+    delete_tracked_messages
 
 logger = configure_logger("[COMMENT]", "cyan")
 

@@ -2,11 +2,11 @@ from aiogram import Router, Bot, html
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
-from .state_income import Income
-from ...api_client import ApiClient
-from ...filters.check_amount import CheckAmountFilter
-from ...utils.logging import configure_logger
-from ...utils.message_utils import track_messages, delete_message, delete_tracked_messages
+from api_client import ApiClient
+from filters.check_amount import CheckAmountFilter
+from routers.income.state_income import Income
+from utils.logging import configure_logger
+from utils.message_utils import track_messages, delete_tracked_messages, delete_message
 
 logger = configure_logger("[AMOUNT]", "orange")
 

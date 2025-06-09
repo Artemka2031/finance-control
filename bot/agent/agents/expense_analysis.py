@@ -1,6 +1,7 @@
 import json
 import re
-from ..config import BACKEND_URL
+
+from config import BACKEND_URL
 from ..prompts import ANALYTIC_PROMPT
 from ..utils import AgentState, openai_client, agent_logger
 from ...api_client import ApiClient

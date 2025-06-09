@@ -1,0 +1,22 @@
+[tool.poetry]
+name = "finance-control-bot"
+version = "0.1.0"
+description = "Telegram bot for finance control"
+authors = ["Artemka2031 <pereiatentcev@gmail.com>"]
+
+[tool.poetry.dependencies]
+python = ">=3.11,<3.14"
+aiogram = "^3.8.0"
+aiohttp = "^3.9.5"
+pydantic = "^2.7.3"
+loguru = "^0.7.2"
+python-dotenv = "^1.0.1"
+openai = "^1.35.3"
+httpx = "^0.27.0"
+redis = { extras = ["asyncio"], version = "^5.0.8" }
+langgraph = "^0.1.0"
+thefuzz= "^0.22.1"
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"

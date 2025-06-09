@@ -8,13 +8,11 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
-# Загружаем переменные окружения из .env
-load_dotenv()
-BACKEND_URL = os.getenv("BACKEND_URL")
+from config import BACKEND_URL
 
 # Проверка BACKEND_URL
 if not BACKEND_URL:
-    raise ValueError("BACKEND_URL is not set in .env file. Please add it to P:\\Python\\finance-control\\.env")
+    raise ValueError("BACKEND_URL is not set in .env.dev.dev file. Please add it to P:\\Python\\finance-control\\.env.dev.dev")
 
 # Модели данных, соответствующие эндпоинтам
 class CodeName(BaseModel):

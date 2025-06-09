@@ -1,6 +1,6 @@
 from aiogram.filters.callback_data import CallbackData
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from ..api_client import ApiClient
+from api_client import ApiClient
 
 class ChooseIncomeCategoryCallback(CallbackData, prefix="income_cat"):
     category_code: str

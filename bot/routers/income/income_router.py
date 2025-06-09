@@ -3,17 +3,17 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
-from .amount_router import create_amount_router
-from .category_router import create_category_router
-from .comment_router import create_comment_router
-from .confirm_router import create_confirm_router
-from .date_router import create_date_router
-from .state_income import Income
-from ..delete_router import create_delete_router
-from ...api_client import ApiClient
-from ...keyboards.today import create_today_keyboard
-from ...utils.logging import configure_logger
-from ...utils.message_utils import track_messages, delete_message, delete_tracked_messages, delete_key_messages
+from api_client import ApiClient
+from keyboards.today import create_today_keyboard
+from routers.delete_router import create_delete_router
+from routers.income.amount_router import create_amount_router
+from routers.income.category_router import create_category_router
+from routers.income.comment_router import create_comment_router
+from routers.income.confirm_router import create_confirm_router
+from routers.income.date_router import create_date_router
+from routers.income.state_income import Income
+from utils.logging import configure_logger
+from utils.message_utils import track_messages, delete_key_messages, delete_message, delete_tracked_messages
 
 logger = configure_logger("[INCOMES]", "yellow")
 

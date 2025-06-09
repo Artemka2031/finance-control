@@ -1,10 +1,9 @@
 import json
 from typing import Dict, List
 
-from ..utils import AgentState, agent_logger
-from ...api_client import ApiClient
-from ...utils.message_utils import format_operation_message
-from .serialization import fetch_keyboard_items
+from agent.agents.serialization import fetch_keyboard_items
+from agent.utils import AgentState, agent_logger
+from api_client import ApiClient
 
 
 async def response_agent(state: AgentState) -> AgentState:

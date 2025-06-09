@@ -1,6 +1,5 @@
 # bot/routers/ai_router/callback_handler.py
 # -*- coding: utf-8 -*-
-
 # ------------------------------------------------------------------ #
 # 0. Импорты                                                         #
 # ------------------------------------------------------------------ #
@@ -13,19 +12,19 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-from .agent_processor import process_agent_request, handle_agent_result
-from .states import MessageState
-from ...agent.agent import Agent
-from ...agent.agents.serialization import deserialize_callback_data
-from ...api_client import ApiClient, CreditorIn, ExpenseIn, IncomeIn
-from ...keyboards.start_kb import create_start_kb
-from ...utils.logging import configure_logger
-from ...utils.message_utils import (
+from agent.agent import Agent
+from agent.agents.serialization import deserialize_callback_data
+from api_client import ApiClient, ExpenseIn, IncomeIn, CreditorIn
+from keyboards.start_kb import create_start_kb
+from routers.ai_router.agent_processor import process_agent_request, handle_agent_result
+from routers.ai_router.states import MessageState
+from utils.logging import configure_logger
+from utils.message_utils import (
     track_messages,
     delete_tracked_messages,
+    animate_processing,
     format_operation_message,
     check_task_status,
-    animate_processing,
     send_success_message,
 )
 
@@ -52,14 +51,14 @@ def create_callback_router(bot: Bot, api_client: ApiClient) -> Router:
     agent = Agent()
 
     # ------------------------------------------------------------------ #
-    # 2.1. Выбор категории (inline-клавиатура) или отмена выбора         #
+    # 2.1. Выбор категории или отмена                                    #
     # ------------------------------------------------------------------ #
     @router.callback_query(F.data.startswith("CS:") | F.data.startswith("cancel:"))
     @track_messages
     async def handle_category_selection(
             query: CallbackQuery, state: FSMContext, bot: Bot
     ) -> Optional[Message]:
-        if not query.message:  # Safety-check
+        if not query.message:  # safety‑check
             logger.warning(f"CallbackQuery без message от {query.from_user.id}")
             return None
 
@@ -70,13 +69,13 @@ def create_callback_router(bot: Bot, api_client: ApiClient) -> Router:
 
         logger.info(f"{user_id=}: выбрал {selection=}")
 
-        # -- отменяем активные таймеры
+        # отменяем таймеры
         data = await state.get_data()
         for t in data.get("timer_tasks", []):
             t["task"].cancel()
         await state.update_data(timer_tasks=[])
 
-        # -- извлекаем предыдущий agent_state
+        # previous agent_state
         data = await state.get_data()
         prev_state = _safe_state(data)
         input_text = data.get("input_text", "")
@@ -91,7 +90,7 @@ def create_callback_router(bot: Bot, api_client: ApiClient) -> Router:
                 text="❌ Уточнение отменено",
                 parse_mode="HTML",
             )
-            # если запросов больше нет — в дефолт
+            # если запросов больше нет — сбрасываемся
             if not prev_state.get("requests"):
                 await state.clear()
                 await state.set_state(MessageState.waiting_for_ai_input)
@@ -101,9 +100,10 @@ def create_callback_router(bot: Bot, api_client: ApiClient) -> Router:
                     reply_markup=create_start_kb(),
                 )
 
-            # иначе запускаем агента повторно
             processing = await bot.send_message(
-                chat_id=chat_id, text="🔍 Обрабатываем отмену…", parse_mode="HTML"
+                chat_id=chat_id,
+                text="🔍 Обрабатываем отмену…",
+                parse_mode="HTML",
             )
             result = await process_agent_request(
                 agent, input_text, interactive=True, selection=selection, prev_state=prev_state
@@ -150,62 +150,58 @@ def create_callback_router(bot: Bot, api_client: ApiClient) -> Router:
 
         logger.info(f"{user_id=}: подтвердил запрос #{request_index}")
 
-        # -- отменяем активные таймеры
+        # отменяем таймеры
         data = await state.get_data()
-
         for t in data.get("timer_tasks", []):
             t["task"].cancel()
         await state.update_data(timer_tasks=[])
 
-        # -- достаём текущий agent_state
-        data = await state.get_data()
-        operation_info = data.get("operation_info", "Операция")
-        # prev_state = _safe_state(data)
-
-        # -- ищем нужный request
-        # request = next(
-        #     (r for r in prev_state.get("requests", []) if r.get("index", -1) == request_index),
-        #     None,
-        # )
-        #
-        # if not request:
-        #     await bot.edit_message_text(
-        #         chat_id=chat_id,
-        #         message_id=message_id,
-        #         text="😓 Ошибка: запрос не найден",
-        #         parse_mode="HTML",
-        #     )
-        #     return query.message
-
         await state.set_state(MessageState.confirming_operation)
 
-        entities = data["entities"]
-        intent = data["intent"]
-
-        if not entities or not intent:
+        # ------------------------------------------------------------------ #
+        # ❶  Достаём нужный запрос из agent_state.requests                   #
+        # ------------------------------------------------------------------ #
+        agent_state = _safe_state(data)
+        req = next(
+            (r for r in agent_state.get("requests", []) if r.get("index") == request_index),
+            None,
+        )
+        if not req:
             await bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=message_id,
-                text="😓 Ошибка: данные операции не найдены",
-                parse_mode=ParseMode.HTML
+                text="😓 Ошибка: запрос не найден",
+                parse_mode="HTML",
             )
+            return query.message
 
-        # ---------- 2.2.a Статус «⏳ Подтверждаем…» + анимация ---------- #
+        intent = req["intent"]
+        entities = req["entities"]
+        operation_info = await format_operation_message(entities, api_client)
+
+        # ------------------------------------------------------------------ #
+        # ❷  Ставим статус «подтверждаем…» и анимацию                        #
+        # ------------------------------------------------------------------ #
         await bot.edit_message_text(
-            chat_id=chat_id, message_id=message_id, text="⏳ Подтверждаем операцию…", parse_mode="HTML"
+            chat_id=chat_id,
+            message_id=message_id,
+            text="⏳ Подтверждаем операцию…",
+            parse_mode="HTML",
         )
         animation_task = asyncio.create_task(
-            animate_processing(bot, chat_id, message_id, await format_operation_message(entities, api_client))
+            animate_processing(bot, chat_id, message_id, operation_info)
         )
 
         task_ids: list[str] = []
         try:
-            # -- нормализуем дату
+            # нормализуем дату
             date_str = entities["date"]
             date_obj = datetime.strptime(date_str, "%d.%m.%y" if len(date_str) == 8 else "%d.%m.%Y")
             date_str = date_obj.strftime("%d.%m.%Y")
 
-            # ---------- 2.2.b INTENT-специфические вызовы API ---------- #
+            # ------------------------------------------------------------------ #
+            # ❸  INTENT‑специфическая логика                                     #
+            # ------------------------------------------------------------------ #
             if intent == "add_income":
                 dto = IncomeIn(
                     date=date_str,
@@ -217,6 +213,7 @@ def create_callback_router(bot: Bot, api_client: ApiClient) -> Router:
                 if not resp.ok or not resp.task_id:
                     raise RuntimeError(resp.detail or "No task id")
                 task_ids.append(resp.task_id)
+
             elif intent == "add_expense":
                 dto = ExpenseIn(
                     date=date_str,
@@ -264,12 +261,16 @@ def create_callback_router(bot: Bot, api_client: ApiClient) -> Router:
                     raise RuntimeError(resp.detail or "No task id")
                 task_ids.append(resp.task_id)
 
-            # ---------- 2.2.c Ждём фоновые задачи ---------- #
+            # ------------------------------------------------------------------ #
+            # ❹  Ждём завершения фоновых задач                                  #
+            # ------------------------------------------------------------------ #
             results = await asyncio.gather(*(check_task_status(api_client, tid) for tid in task_ids))
             if not all(results):
                 raise RuntimeError("Операция не завершилась успешно")
 
-            # ---------- 2.2.d Успех ---------- #
+            # ------------------------------------------------------------------ #
+            # ❺  Успех                                                          #
+            # ------------------------------------------------------------------ #
             animation_task.cancel()
             success_text = {
                 "add_income": "✅ Доход успешно добавлен",
@@ -277,11 +278,12 @@ def create_callback_router(bot: Bot, api_client: ApiClient) -> Router:
                 "borrow": "✅ Записан долг и расход",
                 "repay": "✅ Возврат долга",
             }.get(intent, "✅ Операция выполнена")
+
             await send_success_message(
                 bot,
                 chat_id,
                 message_id,
-                f"{await format_operation_message(entities, api_client)}\n\n{success_text}",
+                f"{operation_info}\n\n{success_text}",
                 task_ids,
                 state,
                 operation_info,

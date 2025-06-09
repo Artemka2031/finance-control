@@ -1,7 +1,7 @@
 # Bot/middleware/logging.py
 from aiogram import BaseMiddleware
 from aiogram.types import Update
-from ..utils.logging import configure_logger
+from utils.logging import configure_logger
 
 # Configure middleware logger
 logger = configure_logger("[MIDDLEWARE]", "magenta")

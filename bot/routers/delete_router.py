@@ -5,11 +5,10 @@ from aiogram import Router, Bot
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery
 
-from ..api_client import ApiClient
-from ..keyboards.delete import create_delete_operation_kb
-from ..keyboards.utils import DeleteOperationCallback, ConfirmDeleteOperationCallback
-from ..utils.logging import configure_logger
-from ..utils.message_utils import check_task_status
+from api_client import ApiClient
+from keyboards.delete import create_delete_operation_kb
+from keyboards.utils import DeleteOperationCallback, ConfirmDeleteOperationCallback
+from utils.logging import configure_logger
 
 logger = configure_logger("[DELETE]", "red")
 
@@ -65,7 +64,7 @@ def create_delete_router(bot: Bot, api_client: ApiClient):
         # Удаляем служебный текст об успешной записи, если он есть
         operation_info = re.sub(r"^(?:.*✅.*?\n)?", "", operation_info, flags=re.MULTILINE)
 
-        # Проверяем статус задач
+        # Проверяем статус задач через API
         all_already_deleted = True
         valid_task_ids = []
         for task_id in task_ids:
@@ -73,13 +72,19 @@ def create_delete_router(bot: Bot, api_client: ApiClient):
                 logger.warning(f"Invalid task_id: {task_id}")
                 continue
 
-            status = await check_task_status(api_client, task_id)
-            if status.get("status") == "not_found":
-                logger.info(f"Task {task_id} does not exist")
-                continue
-            else:
+            try:
+                status = await api_client.get_task_status(task_id)
+                if not isinstance(status, dict):
+                    logger.error(f"Unexpected status type for task_id {task_id}: {type(status)}")
+                    continue
+                if status.get("status") == "not_found":
+                    logger.info(f"Task {task_id} does not exist")
+                    continue
                 valid_task_ids.append(task_id)
                 all_already_deleted = False
+            except Exception as e:
+                logger.error(f"Error checking task {task_id} status: {e}")
+                continue
 
         if all_already_deleted:
             await bot.edit_message_text(
@@ -164,10 +169,25 @@ def create_delete_router(bot: Bot, api_client: ApiClient):
                     success = False
                     continue
 
-                # Получаем статус и тип задачи
-                status = await check_task_status(api_client, task_id)
-                task_type = status.get("task_type", "unknown")
-                task_status = status.get("status")
+                # Получаем статус и тип задачи через API
+                try:
+                    status = await api_client.get_task_status(task_id)
+                    if not isinstance(status, dict):
+                        error_msg = f"Unexpected status type for task_id {task_id}: {type(status)}"
+                        logger.error(error_msg)
+                        error_messages.append(error_msg)
+                        success = False
+                        valid_task_ids.append(task_id)
+                        continue
+                    task_type = status.get("task_type", "unknown")
+                    task_status = status.get("status")
+                except Exception as e:
+                    error_msg = f"Error checking task {task_id} status: {e}"
+                    logger.error(error_msg)
+                    error_messages.append(error_msg)
+                    success = False
+                    valid_task_ids.append(task_id)
+                    continue
 
                 if task_status == "not_found":
                     logger.info(f"Task {task_id} does not exist")
@@ -188,13 +208,27 @@ def create_delete_router(bot: Bot, api_client: ApiClient):
                     if response.ok and response.task_id:
                         remove_task_id = response.task_id
                         logger.info(f"Initiated {task_type} deletion with task_id={remove_task_id} for task {task_id}")
-                        remove_status = await check_task_status(api_client, remove_task_id)
-                        if remove_status.get("status") == "completed":
-                            logger.info(
-                                f"Успешно удалён {task_type} task_id={task_id} (remove_task_id={remove_task_id})")
-                        else:
-                            error_msg = f"Не удалось удалить {task_type} (task_id={task_id}): {remove_status.get('result', {}).get('error', 'неизвестная ошибка')}"
-                            logger.warning(error_msg)
+                        # Проверяем статус задачи удаления
+                        try:
+                            remove_status = await api_client.get_task_status(remove_task_id)
+                            if not isinstance(remove_status, dict):
+                                error_msg = f"Unexpected remove_status type for task_id {remove_task_id}: {type(remove_status)}"
+                                logger.error(error_msg)
+                                error_messages.append(error_msg)
+                                success = False
+                                valid_task_ids.append(task_id)
+                                continue
+                            if remove_status.get("status") == "completed":
+                                logger.info(
+                                    f"Успешно удалён {task_type} task_id={task_id} (remove_task_id={remove_task_id})")
+                            else:
+                                error_msg = f"Не удалось удалить {task_type} (task_id={task_id}): {remove_status.get('result', {}).get('error', 'неизвестная ошибка')}"
+                                logger.warning(error_msg)
+                                error_messages.append(error_msg)
+                                success = False
+                        except Exception as e:
+                            error_msg = f"Error checking remove task {remove_task_id} status: {e}"
+                            logger.error(error_msg)
                             error_messages.append(error_msg)
                             success = False
                     else:

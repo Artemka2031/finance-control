@@ -6,14 +6,13 @@ from aiogram import Router, Bot, html, F
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-from ..expenses.state_classes import Expense
-from ...api_client import ApiClient, ExpenseIn, CreditorIn
-from ...keyboards.delete import create_delete_operation_kb
-from ...keyboards.start_kb import create_start_kb
-from ...keyboards.utils import ConfirmOperationCallback
-from ...utils.logging import configure_logger
-from ...utils.message_utils import track_messages, delete_tracked_messages, delete_key_messages, \
-    format_operation_message, animate_processing, check_task_status, send_success_message
+from api_client import ApiClient, ExpenseIn, CreditorIn
+from keyboards.start_kb import create_start_kb
+from keyboards.utils import ConfirmOperationCallback
+from routers.expenses.state_classes import Expense
+from utils.logging import configure_logger
+from utils.message_utils import track_messages, format_operation_message, animate_processing, check_task_status, \
+    delete_tracked_messages, send_success_message, delete_key_messages
 
 logger = configure_logger("[CONFIRM]", "blue")
 

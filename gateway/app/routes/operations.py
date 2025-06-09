@@ -1,4 +1,5 @@
-﻿from functools import wraps
+﻿# gateway/app/routes/operations.py
+from functools import wraps
 from typing import Dict, Literal, Any, List
 
 from fastapi import APIRouter, Request, HTTPException, Depends

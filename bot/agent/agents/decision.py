@@ -2,10 +2,10 @@ import json
 
 from openai import AsyncOpenAI
 
-from ..prompts import get_decision_prompt
-from ...agent.config import OPENAI_API_KEY, BACKEND_URL
-from ...agent.utils import agent_logger, AgentState
-from ...api_client import ApiClient
+from agent.prompts import get_decision_prompt
+from agent.utils import AgentState, agent_logger
+from api_client import ApiClient
+from config import BACKEND_URL, OPENAI_API_KEY
 
 
 async def decision_agent(state: AgentState) -> AgentState:

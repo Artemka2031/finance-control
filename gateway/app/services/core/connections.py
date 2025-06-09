@@ -1,7 +1,4 @@
-# gateway/app/services/core/connections.py
-import asyncio
-import random
-import time
+import re
 from typing import Dict, List, Tuple
 
 import gspread
@@ -10,14 +7,25 @@ import redis.asyncio as aioredis
 from gspread_asyncio import AsyncioGspreadClientManager
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
 
-from .config import config, log
+from .config import (
+    GOOGLE_CREDENTIALS,
+    SPREADSHEET_URL,
+    WORKSHEET_NAME,
+    GS_MAX_ROWS,
+    REDIS_URL,
+    log,
+)
 from .utils import retry_gs, timeit
-
 
 REDIS: aioredis.Redis | None = None
 AGS: AsyncioGspreadClientManager | None = None
+
+
+def _extract_spreadsheet_id(url: str) -> str:
+    """Извлекает ID таблицы из полного URL."""
+    match = re.search(r"/d/([a-zA-Z0-9_-]+)", url)
+    return match.group(1) if match else url
 
 
 def get_gs_creds() -> Credentials:
@@ -26,7 +34,7 @@ def get_gs_creds() -> Credentials:
         "https://www.googleapis.com/auth/drive",
     ]
     return Credentials.from_service_account_info(
-        config.google_credentials.model_dump(by_alias=True),
+        GOOGLE_CREDENTIALS,
         scopes=scopes,
     )
 
@@ -35,19 +43,16 @@ async def get_redis() -> aioredis.Redis:
     global REDIS
     if REDIS is None:
         REDIS = aioredis.from_url(
-            config.redis_url,
+            REDIS_URL,
             encoding="utf-8",
             decode_responses=True,
         )
-        log.info(f"Connected to Redis at {config.redis_url}")
+        log.info(f"Connected to Redis at {REDIS_URL}")
     return REDIS
 
 
 def to_a1(row: int, col: int) -> str:
-    """
-    Преобразует (row, col) → адрес в A1-нотации.
-    row, col начинаются с 1.
-    """
+    """(row, col) → A1‑нотация, отсчёт с 1."""
     col_str = ""
     while col > 0:
         col, rem = divmod(col - 1, 26)
@@ -58,24 +63,26 @@ def to_a1(row: int, col: int) -> str:
 @retry_gs
 def open_worksheet_sync() -> Tuple[gspread.Worksheet, List[List[str]], Dict[str, str]]:
     client = gspread.authorize(get_gs_creds())
+    sheet_id = _extract_spreadsheet_id(SPREADSHEET_URL)
+
     try:
-        sheet = client.open_by_key(config.spreadsheet_url).worksheet(config.worksheet_name)
-    except gspread.exceptions.SpreadsheetNotFound as e:
-        log.error(f"Spreadsheet not found: {config.spreadsheet_url}. Ensure the ID is correct and accessible.")
+        sheet = client.open_by_url(SPREADSHEET_URL).worksheet(WORKSHEET_NAME)
+    except gspread.exceptions.SpreadsheetNotFound:
+        log.error(f"Spreadsheet not found: {SPREADSHEET_URL}")
         raise
-    except gspread.exceptions.WorksheetNotFound as e:
-        log.error(f"Worksheet '{config.worksheet_name}' not found in spreadsheet. Check the worksheet name.")
+    except gspread.exceptions.WorksheetNotFound:
+        log.error(f"Worksheet '{WORKSHEET_NAME}' not found")
         raise
 
     def _fetch_rows():
-        rows = sheet.get(f"A1:ZZ{config.gs_max_rows}")
+        rows = sheet.get(f"A1:ZZ{GS_MAX_ROWS}")
         return sheet, rows
 
     def _fetch_notes(rows: List[List[str]]) -> Dict[str, str]:
         svc = build("sheets", "v4", credentials=get_gs_creds())
         resp = svc.spreadsheets().get(
-            spreadsheetId=config.spreadsheet_url,
-            ranges=[f"{config.worksheet_name}!A1:ZZ{config.gs_max_rows}"],
+            spreadsheetId=sheet_id,
+            ranges=[f"{WORKSHEET_NAME}!A1:ZZ{GS_MAX_ROWS}"],
             fields="sheets.data.rowData.values.note",
         ).execute()
 
@@ -87,8 +94,7 @@ def open_worksheet_sync() -> Tuple[gspread.Worksheet, List[List[str]], Dict[str,
             for col_idx, cell in enumerate(row.get("values", []), start=1):
                 note = cell.get("note", "")
                 if note:
-                    addr = to_a1(sheet_row_idx, col_idx)
-                    notes[addr] = note
+                    notes[to_a1(sheet_row_idx, col_idx)] = note
         log.debug("Total notes loaded: %d", len(notes))
         return notes
 
@@ -103,14 +109,15 @@ async def get_async_worksheet() -> gspread_asyncio.AsyncioGspreadWorksheet:
     if AGS is None:
         AGS = AsyncioGspreadClientManager(get_gs_creds)
     agc = await AGS.authorize()
+
     try:
-        ss = await agc.open_by_key(config.spreadsheet_url)
-        return await ss.worksheet(config.worksheet_name)
+        ss = await agc.open_by_url(SPREADSHEET_URL)
+        return await ss.worksheet(WORKSHEET_NAME)
     except gspread_asyncio.exceptions.APIError as e:
         log.error(f"Failed to open spreadsheet: {e}")
         raise
-    except gspread_asyncio.exceptions.WorksheetNotFound as e:
-        log.error(f"Worksheet '{config.worksheet_name}' not found in spreadsheet. Check the worksheet name.")
+    except gspread_asyncio.exceptions.WorksheetNotFound:
+        log.error(f"Worksheet '{WORKSHEET_NAME}' not found")
         raise
 
 

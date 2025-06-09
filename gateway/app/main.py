@@ -1,29 +1,56 @@
 ﻿import asyncio
 import sys
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 
+import redis.asyncio as aioredis
+from fastapi import FastAPI, Request
 from starlette.middleware.cors import CORSMiddleware
+from prometheus_fastapi_instrumentator import Instrumentator
 
 from .services import GoogleSheetsService
 from .services.operations.task_storage import init_db
+from .services.core.config import REDIS_URL, FASTAPI_PORT, log
 
-# Добавляем корневую папку проекта в sys.path
-BASE_DIR = Path(__file__).resolve().parent.parent.parent  # P:\Python\finance-control
-sys.path.append(str(BASE_DIR))
+# Добавляем корень проекта в sys.path (если нужен импорт по корню)
+BASE_DIR = Path(__file__).resolve().parent
+sys.path.append(str(BASE_DIR.parent.parent))
 
-from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request
-from loguru import logger
-from prometheus_fastapi_instrumentator import Instrumentator
-import redis.asyncio as aioredis
 
-from .routes import operations
-from .services.core import REDIS_URL, log
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Старт / Shutdown."""
+    redis = aioredis.from_url(REDIS_URL, encoding="utf-8", decode_responses=True)
+    log.info(f"🔗 Connected to Redis at {REDIS_URL}")
+    app.state.redis = redis
 
-app = FastAPI(title='Finance-Gateway', version='0.1.0')
+    init_db()  # таблица точно создаётся
+    service = GoogleSheetsService()
+    await service.initialize()
+    log.info("GoogleSheetsService initialized")
 
-# Настройка CORS (если требуется)
+    yield
+
+    if hasattr(service, "_worker_task") and service._worker_task:
+        service._worker_task.cancel()
+        try:
+            await service._worker_task
+        except asyncio.CancelledError:
+            log.info("GoogleSheetsService worker task cancelled")
+
+    await redis.close()
+    log.info("🔌 Redis connection closed")
+    log.info("Gateway shutdown complete")
+
+
+app = FastAPI(
+    title="Finance‑Gateway",
+    version="0.1.0",
+    lifespan=lifespan,  # <‑‑ lifespan передаём прямо в конструктор
+)
+
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -32,71 +59,36 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Middleware для логирования времени выполнения запросов
+# Роуты операций
+from .routes import operations  # noqa: E402
+
+app.include_router(operations.router)
+
+
+# Логирование времени отклика
 @app.middleware("http")
 async def log_request_time(request: Request, call_next):
-    start_time = time.time()
+    start = time.time()
     response = await call_next(request)
-    duration = (time.time() - start_time) * 1000  # В миллисекундах
+    duration = (time.time() - start) * 1000
     log.info(
-        f"Request: {request.method} {request.url.path} completed in {duration:.2f} ms, status: {response.status_code}"
+        f"{request.method} {request.url.path} finished in {duration:.2f} ms "
+        f"({response.status_code})"
     )
     return response
 
-@app.on_event("startup")
-async def startup_event():
-    log.info("Application starting up")
-    init_db()
-    service = GoogleSheetsService()
-    await service.initialize()
-    log.info("GoogleSheetsService initialized on startup")
 
-# Регистрируем Prometheus-метрики
+# Prometheus
 Instrumentator().instrument(app).expose(app, include_in_schema=False, endpoint="/metrics")
 
-# Настройка Redis
-redis: aioredis.Redis | None = None
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    global redis
-    logger.remove()
-    logger.add(lambda msg: print(msg, end=""), level="INFO", serialize=True)
-    logger.info("⏱ Gateway starting…")
-
-    redis = aioredis.from_url(REDIS_URL, encoding="utf-8", decode_responses=True)
-    logger.info(f"🔗 Connected to Redis at {REDIS_URL}")
-    app.state.redis = redis
-
-    logger.info("Starting application")
-    service = await GoogleSheetsService.get_instance()
-    logger.info("GoogleSheetsService initialized")
-
-    yield
-
-    if hasattr(service, '_worker_task') and service._worker_task is not None:
-        service._worker_task.cancel()
-        try:
-            await service._worker_task
-        except asyncio.CancelledError:
-            logger.info("GoogleSheetsService worker task cancelled")
-    if redis:
-        await redis.close()
-        logger.info("🔌 Redis connection closed")
-    logger.info("Shutting down application")
-
-app.lifespan = lifespan
-
-# Отладочный вывод для проверки роутеров
-try:
-    logger.info(f"Routes before including router: {app.routes}")
-    app.include_router(operations.router)
-    logger.info(f"Routes after including router: {app.routes}")
-except Exception as e:
-    logger.error(f"Failed to include router: {str(e)}")
-    raise
-
-# Добавим тестовую конечную точку для проверки
 @app.get("/health", tags=["Health"])
 async def health_check():
     return {"status": "ok"}
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    log.info(f"Starting gateway on port {FASTAPI_PORT}")
+    uvicorn.run("app.main:app", host="0.0.0.0", port=FASTAPI_PORT, reload=False)

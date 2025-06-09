@@ -1,7 +1,9 @@
 import os
 from openai import AsyncOpenAI
-from ...utils.logging import configure_logger
-from ...agent.config import OPENAI_API_KEY
+
+from config import OPENAI_API_KEY
+from utils.logging import configure_logger
+
 logger = configure_logger("[TRANSCRIPTION]", "purple")
 
 model_id = 'whisper-1'

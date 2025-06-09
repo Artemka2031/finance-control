@@ -4,8 +4,8 @@ from typing import Dict, Any, Callable, Awaitable
 from aiogram import Bot, BaseMiddleware
 from aiogram.types import TelegramObject
 
-from ..api_client import ApiClient
-from ..utils.logging import configure_logger
+from api_client import ApiClient
+from utils.logging import configure_logger
 
 logger = configure_logger("[DI_MIDDLEWARE]", "green")
 

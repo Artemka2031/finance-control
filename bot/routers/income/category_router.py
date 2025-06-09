@@ -2,11 +2,11 @@ from aiogram import Router, F, Bot, html
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup
 
-from .state_income import Income
-from ...api_client import ApiClient
-from ...keyboards.income_category import ChooseIncomeCategoryCallback
-from ...utils.logging import configure_logger
-from ...utils.message_utils import track_messages
+from api_client import ApiClient
+from keyboards.income_category import ChooseIncomeCategoryCallback
+from routers.income.state_income import Income
+from utils.logging import configure_logger
+from utils.message_utils import track_messages
 
 logger = configure_logger("[CATEGORY]", "purple")
 

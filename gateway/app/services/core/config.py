@@ -1,102 +1,99 @@
-# gateway/app/services/core/config.py
-import json
 import os
-import re
+import json
 from pathlib import Path
-from typing import Dict, Optional
-
+from dotenv import load_dotenv
 from loguru import logger
-from pydantic import BaseModel, Field, ValidationError, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Указываем путь к корневой папке проекта
-BASE_DIR = Path(__file__).resolve().parent.parent.parent.parent.parent  # P:\Python\finance-control
+# ──────────────────────────────────────────────────────────────────────────────
+#  Базовый путь (корень репозитория)
+# ──────────────────────────────────────────────────────────────────────────────
+BASE_DIR = Path(__file__).resolve().parent.parent.parent.parent
+logger.debug(f"BASE_DIR: {BASE_DIR}")
 
-class GoogleCredentials(BaseModel):
-    type: str = Field(..., alias="type")
-    project_id: str = Field(..., alias="project_id")
-    private_key_id: str = Field(..., alias="private_key_id")
-    private_key: str = Field(..., alias="private_key")
-    client_email: str = Field(..., alias="client_email")
-    client_id: str = Field(..., alias="client_id")
-    auth_uri: str = Field(..., alias="auth_uri")
-    token_uri: str = Field(..., alias="token_uri")
-    auth_provider_x509_cert_url: str = Field(..., alias="auth_provider_x509_cert_url")
-    client_x509_cert_url: str = Field(..., alias="client_x509_cert_url")
+# ──────────────────────────────────────────────────────────────────────────────
+#  Локальная разработка: .env.dev читаем только если он действительно есть
+# ──────────────────────────────────────────────────────────────────────────────
+ENV_FILE = BASE_DIR / ".env.dev"
+if ENV_FILE.exists():
+    load_dotenv(ENV_FILE)
+    logger.debug(".env.dev loaded")
+else:
+    logger.debug(".env.dev not found, skipping")
 
+# ──────────────────────────────────────────────────────────────────────────────
+#  Переменные окружения
+# ──────────────────────────────────────────────────────────────────────────────
+SPREADSHEET_URL = os.getenv("SPREADSHEET_URL")
+REDIS_URL       = os.getenv("REDIS_URL")
+FASTAPI_PORT    = int(os.getenv("FASTAPI_PORT", "8000"))
+DATABASE_PATH   = os.getenv("DATABASE_PATH", "tasks.db")
 
-class Config(BaseSettings):
-    spreadsheet_url: str = Field(..., env="SPREADSHEET_URL")
-    redis_url: str = Field(default="redis://localhost:6379/0", env="REDIS_URL")
-    gs_max_rows: int = Field(default=300, env="GS_MAX_ROWS")
-    bot_token_main: Optional[str] = Field(default=None, env="BOT_TOKEN_MAIN")
-    worksheet_name: str = Field(default="Общая таблица", env="WORKSHEET_NAME")
-    google_credentials: GoogleCredentials
+GS_MAX_ROWS     = int(os.getenv("GS_MAX_ROWS", "300"))
+WORKSHEET_NAME  = os.getenv("WORKSHEET_NAME", "Общая таблица")
+PROJECT_ID      = os.getenv("PROJECT_ID", "project1")
 
-    model_config = SettingsConfigDict(
-        env_file=BASE_DIR / ".env",
-        env_file_encoding="utf-8",
-        extra="ignore",
-    )
+# ──────────────────────────────────────────────────────────────────────────────
+#  GOOGLE_CREDENTIALS: переменная‑JSON или файл creds.json
+# ──────────────────────────────────────────────────────────────────────────────
+GOOGLE_CREDENTIALS_JSON: str | None = os.getenv("GOOGLE_CREDENTIALS")
 
-    @field_validator("spreadsheet_url")
-    @classmethod
-    def extract_spreadsheet_id(cls, v: str) -> str:
-        # Извлекаем ID из полного URL или возвращаем как есть, если это ID
-        match = re.match(r"https://docs\.google\.com/spreadsheets/d/([a-zA-Z0-9_-]+)", v)
-        if match:
-            return match.group(1)
-        if re.match(r"[a-zA-Z0-9_-]+", v):
-            return v
-        raise ValueError("Invalid SPREADSHEET_URL format")
+def _load_creds_file(path: Path) -> str | None:
+    if path.exists():
+        logger.info(f"Reading GOOGLE_CREDENTIALS from file {path}")
+        return path.read_text(encoding="utf-8")
+    return None
 
-    @classmethod
-    def parse_env(cls) -> "Config":
-        try:
-            creds_path = BASE_DIR / "creds.json"
-            if creds_path.exists():
-                with open(creds_path, "r", encoding="utf-8") as f:
-                    creds_dict = json.load(f)
-            else:
-                creds_dict = json.loads(os.getenv("GOOGLE_CREDENTIALS", "{}"))
+if not GOOGLE_CREDENTIALS_JSON:
+    creds_path = Path(os.getenv("GOOGLE_CREDENTIALS_FILE", BASE_DIR / "creds.json"))
+    GOOGLE_CREDENTIALS_JSON = _load_creds_file(creds_path)
 
-            return cls(google_credentials=creds_dict)
-        except ValidationError as e:
-            logger.error(f"Configuration validation failed: {e}")
-            raise
-        except json.JSONDecodeError as e:
-            logger.error(f"Invalid JSON in GOOGLE_CREDENTIALS or creds.json: {e}")
-            raise
-        except Exception as e:
-            logger.error(f"Failed to load configuration: {e}")
-            raise
+GOOGLE_CREDENTIALS: dict | None = None
+if GOOGLE_CREDENTIALS_JSON:
+    try:
+        GOOGLE_CREDENTIALS = json.loads(GOOGLE_CREDENTIALS_JSON)
+        logger.info("Successfully parsed GOOGLE_CREDENTIALS")
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse GOOGLE_CREDENTIALS JSON: {e}")
+        raise
 
+# ──────────────────────────────────────────────────────────────────────────────
+#  Проверка обязательных параметров
+# ──────────────────────────────────────────────────────────────────────────────
+_missing = [
+    name for name, value in {
+        "SPREADSHEET_URL"   : SPREADSHEET_URL,
+        "GOOGLE_CREDENTIALS": GOOGLE_CREDENTIALS,
+        "REDIS_URL"         : REDIS_URL,
+    }.items() if not value
+]
+if _missing:
+    logger.error(f"Обязательные переменные/секреты не заданы: {', '.join(_missing)}")
+    raise EnvironmentError(f"Обязательные переменные/секреты не заданы: {', '.join(_missing)}")
 
-# Инициализация конфигурации
-config = Config.parse_env()
-
-# Экспорт переменных для совместимости
-SPREADSHEET_URL = config.spreadsheet_url
-REDIS_URL = config.redis_url
-GS_MAX_ROWS = config.gs_max_rows
-BOT_TOKEN_MAIN = config.bot_token_main
-WORKSHEET_NAME = config.worksheet_name
-GOOGLE_CREDENTIALS = config.google_credentials.model_dump(by_alias=True)
-
-# Настройка логирования с цветами
-logger.remove()  # Удаляем все существующие обработчики
+# ──────────────────────────────────────────────────────────────────────────────
+#  Настройка логирования
+# ──────────────────────────────────────────────────────────────────────────────
+logger.remove()
 logger.add(
     lambda msg: print(msg, end=""),
     level="DEBUG",
     format=(
         "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
-        "<b>{level:<8}</b> | "
+        "<level>{level:<8}</level> | "
         "<cyan>{name}:{function}:{line}</cyan> - "
         "<b>{message}</b>"
     ),
     colorize=True,
 )
-
 log = logger
 
-log.info(f"Configuration loaded: SPREADSHEET_URL={SPREADSHEET_URL}, WORKSHEET_NAME={WORKSHEET_NAME}")
+log.info(
+    f"Configuration loaded: "
+    f"SPREADSHEET_URL={SPREADSHEET_URL}, "
+    f"REDIS_URL={REDIS_URL}, "
+    f"FASTAPI_PORT={FASTAPI_PORT}, "
+    f"GS_MAX_ROWS={GS_MAX_ROWS}, "
+    f"WORKSHEET_NAME={WORKSHEET_NAME}, "
+    f"DATABASE_PATH={DATABASE_PATH}, "
+    f"PROJECT_ID={PROJECT_ID}"
+)

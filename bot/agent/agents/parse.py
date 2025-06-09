@@ -3,10 +3,10 @@ import re
 from datetime import datetime
 from typing import Dict, List
 
-from ..config import BACKEND_URL
-from ..prompts import get_parse_prompt
-from ..utils import AgentState, openai_client, agent_logger
-from ...api_client import ApiClient
+from agent.prompts import get_parse_prompt
+from agent.utils import agent_logger, openai_client, AgentState
+from api_client import ApiClient
+from config import BACKEND_URL
 
 _LOAN_RE = re.compile(
     r"\b(в\s+долг|за\s+сч[её]т|занима[юе]|бер[уё]|(?:у|от)\s+[\w\-]+?\s+занял)\b",
@@ -150,7 +150,7 @@ async def parse_agent(state: AgentState) -> AgentState:
 
             try:
                 resp = await openai_client.chat.completions.create(
-                    model="gpt-4.1-mini",
+                    model="gpt-4.1",
                     messages=[{"role": "user", "content": prompt}],
                     response_format={"type": "json_object"},
                 )

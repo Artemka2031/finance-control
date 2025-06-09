@@ -2,7 +2,7 @@ import asyncio
 import re
 from typing import Any, Dict
 
-from ..core.config import log, config
+from ..core.config import log, SPREADSHEET_URL
 from ..core.connections import open_worksheet_sync, get_gs_creds
 from ..core.utils import to_float
 from googleapiclient.discovery import build
@@ -68,7 +68,7 @@ class Operations:
         svc = build("sheets", "v4", credentials=get_gs_creds())
         try:
             response = svc.spreadsheets().get(
-                spreadsheetId=config.spreadsheet_url,
+                spreadsheetId=SPREADSHEET_URL,
                 ranges=[f"{self.ws.title}!{cell}"],
                 fields="sheets.data.rowData.values.note"
             ).execute()

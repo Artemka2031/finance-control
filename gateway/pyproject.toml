@@ -1,0 +1,29 @@
+[tool.poetry]
+name = "finance-control-gateway"
+version = "0.1.0"
+description = "FastAPI gateway for finance control"
+authors = ["Artemka2031 <pereiatentcev@gmail.com>"]
+packages = [{ include = "app" }]
+
+[tool.poetry.dependencies]
+python = ">=3.11,<3.14"
+fastapi = "^0.110.3"
+uvicorn = "^0.29.0"
+redis = { extras = ["asyncio"], version = "^5.0.8" }
+aioredis = "^2.0.1"
+gspread = "^6.0.2"
+gspread-asyncio = "^2.0.0"
+google-auth = "^2.39.0"
+google-api-python-client = "^2.147.0"
+pydantic = "^2.9.2"
+pydantic-settings = "^2.9.1"
+loguru = "^0.7.2"
+prometheus-fastapi-instrumentator = "^7.0.0"
+peewee = "^3.18.0"
+python-dotenv = "^1.0.1"
+tqdm = "^4.65.0"
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"

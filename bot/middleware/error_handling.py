@@ -1,7 +1,7 @@
 from aiogram import BaseMiddleware
 from aiogram.types import CallbackQuery
 
-from bot.utils.logging import configure_logger
+from utils.logging import configure_logger
 
 logger = configure_logger("[ERROR_MIDDLEWARE]", "red")
 

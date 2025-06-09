@@ -3,9 +3,9 @@ from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
-from ..keyboards.start_kb import create_start_kb
-from ..utils.logging import configure_logger
-from ..utils.message_utils import delete_tracked_messages, delete_key_messages
+from keyboards.start_kb import create_start_kb
+from utils.logging import configure_logger
+from utils.message_utils import delete_key_messages, delete_tracked_messages
 
 logger = configure_logger("[START]", "green")
 

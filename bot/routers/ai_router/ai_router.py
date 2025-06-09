@@ -4,20 +4,19 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
-from .callback_handler import create_callback_router
-from .message_handler import create_message_router
-from .states import MessageState
-from ...api_client import ApiClient
-from ...keyboards.start_kb import create_start_kb
-from ...utils.logging import configure_logger
-from ...utils.message_utils import track_messages, delete_message, delete_tracked_messages, delete_key_messages
+from api_client import ApiClient
+from keyboards.start_kb import create_start_kb
+from routers.ai_router.callback_handler import create_callback_router
+from routers.ai_router.message_handler import create_message_router
+from routers.ai_router.states import MessageState
+from utils.logging import configure_logger
+from utils.message_utils import track_messages, delete_message, delete_key_messages, delete_tracked_messages
 
 logger = configure_logger("[AI_ROUTER]", "cyan")
 
 
 def create_ai_router(bot: Bot, api_client: ApiClient) -> Router:
     ai_router = Router(name="ai_router")
-    logger.info("[AI_ROUTER] Initializing AI router")
 
     @ai_router.message(Command("start_ai"))
     @track_messages
